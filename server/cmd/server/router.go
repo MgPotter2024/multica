@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -117,7 +118,10 @@ func parseTrustedProxies(raw string) []netip.Prefix {
 // keeps the default in-memory stores which are fine for single-node dev and
 // tests.
 func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client) chi.Router {
-	r, _ := NewRouterWithOptions(pool, hub, bus, analyticsClient, rdb, RouterOptions{})
+	r, _, err := NewRouterWithOptions(pool, hub, bus, analyticsClient, rdb, RouterOptions{})
+	if err != nil {
+		panic(err)
+	}
 	return r
 }
 
@@ -135,6 +139,17 @@ type RouterOptions struct {
 	WebPushDispatcher  *webpushinternal.Dispatcher
 }
 
+func newWebPushDispatcher(store webpushinternal.Store, override *webpushinternal.Dispatcher) (*webpushinternal.Dispatcher, error) {
+	if override != nil {
+		return override, nil
+	}
+	config, err := webpushinternal.ConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("configure web push: %w", err)
+	}
+	return webpushinternal.NewDispatcher(store, config), nil
+}
+
 // NewRouterWithOptions builds the fully-configured Chi router and
 // returns the *handler.Handler it was constructed from. Callers that
 // need to drive background lifecycle on services attached to the
@@ -142,8 +157,12 @@ type RouterOptions struct {
 // context, calling Wait on shutdown) use the returned handler;
 // callers that only need the HTTP handler (tests, the simple
 // NewRouter shim) discard the second value.
-func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler) {
+func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler, error) {
 	queries := db.New(pool)
+	pushDispatcher, err := newWebPushDispatcher(queries, opts.WebPushDispatcher)
+	if err != nil {
+		return nil, nil, err
+	}
 	emailSvc := service.NewEmailService()
 	daemonHub := opts.DaemonHub
 	if daemonHub == nil {
@@ -182,14 +201,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		LLMDefaultModel:          strings.TrimSpace(os.Getenv("MULTICA_LLM_DEFAULT_MODEL")),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	pushDispatcher := opts.WebPushDispatcher
-	if pushDispatcher == nil {
-		pushConfig, err := webpushinternal.ConfigFromEnv()
-		if err != nil {
-			slog.Warn("web push disabled because VAPID configuration is invalid", "error", err)
-		}
-		pushDispatcher = webpushinternal.NewDispatcher(queries, pushConfig)
-	}
 	h.WebPush = pushDispatcher
 	pushDispatcher.Register(bus)
 	h.Metrics = opts.BusinessMetrics
@@ -792,6 +803,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.Route("/api/web-push", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
 			r.Get("/config", h.GetWebPushConfig)
 			r.Put("/subscription", h.PutWebPushSubscription)
 			r.Delete("/subscription", h.DeleteWebPushSubscription)
@@ -1318,7 +1330,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		})
 	})
 
-	return r, h
+	return r, h, nil
 }
 
 // buildLarkConnector wires the real WS long-conn connector that talks

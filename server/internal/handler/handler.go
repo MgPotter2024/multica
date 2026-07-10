@@ -144,14 +144,15 @@ type Handler struct {
 	// May be nil in tests / self-hosted with the metrics listener disabled;
 	// every Record* method is nil-safe and obsmetrics.RecordEvent treats a
 	// nil Metrics as "PostHog only".
-	Metrics              *obsmetrics.BusinessMetrics
-	WebPush              WebPushService
-	PATCache             *auth.PATCache
-	DaemonTokenCache     *auth.DaemonTokenCache
-	MembershipCache      *auth.MembershipCache
-	WebhookRateLimiter   WebhookRateLimiter
-	WebhookIPRateLimiter WebhookRateLimiter
-	CloudRuntime         cloudRuntimeProxy
+	Metrics                *obsmetrics.BusinessMetrics
+	WebPush                WebPushService
+	PATCache               *auth.PATCache
+	DaemonTokenCache       *auth.DaemonTokenCache
+	MembershipCache        *auth.MembershipCache
+	WebhookRateLimiter     WebhookRateLimiter
+	WebhookIPRateLimiter   WebhookRateLimiter
+	WebPushTestRateLimiter WebhookRateLimiter
+	CloudRuntime           cloudRuntimeProxy
 	// Lark integration. All three are nil when the Lark master key
 	// (MULTICA_LARK_SECRET_KEY) is unset; the corresponding HTTP
 	// handlers return 503 in that case so a misconfigured self-host
@@ -251,28 +252,29 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	taskSvc := service.NewTaskService(queries, txStarter, hub, bus, daemonHub)
 	taskSvc.Analytics = analyticsClient
 	return &Handler{
-		Queries:               queries,
-		DB:                    executor,
-		TxStarter:             txStarter,
-		Hub:                   hub,
-		DaemonHub:             daemonHub,
-		DaemonProfileRefresh:  daemonProfileRefresh,
-		Bus:                   bus,
-		TaskService:           taskSvc,
-		IssueService:          service.NewIssueService(queries, txStarter, bus, analyticsClient, taskSvc),
-		AutopilotService:      service.NewAutopilotService(queries, txStarter, bus, taskSvc),
-		EmailService:          emailService,
-		UpdateStore:           NewInMemoryUpdateStore(),
-		ModelListStore:        NewInMemoryModelListStore(),
-		LocalSkillListStore:   NewInMemoryLocalSkillListStore(),
-		LocalSkillImportStore: NewInMemoryLocalSkillImportStore(),
-		LivenessStore:         NewNoopLivenessStore(),
-		HeartbeatScheduler:    NewPassthroughHeartbeatScheduler(queries),
-		Storage:               store,
-		CFSigner:              cfSigner,
-		Analytics:             analyticsClient,
-		WebhookRateLimiter:    NewMemoryWebhookRateLimiter(DefaultWebhookRateLimit()),
-		WebhookIPRateLimiter:  NewMemoryWebhookIPRateLimiter(DefaultWebhookIPRateLimit()),
+		Queries:                queries,
+		DB:                     executor,
+		TxStarter:              txStarter,
+		Hub:                    hub,
+		DaemonHub:              daemonHub,
+		DaemonProfileRefresh:   daemonProfileRefresh,
+		Bus:                    bus,
+		TaskService:            taskSvc,
+		IssueService:           service.NewIssueService(queries, txStarter, bus, analyticsClient, taskSvc),
+		AutopilotService:       service.NewAutopilotService(queries, txStarter, bus, taskSvc),
+		EmailService:           emailService,
+		UpdateStore:            NewInMemoryUpdateStore(),
+		ModelListStore:         NewInMemoryModelListStore(),
+		LocalSkillListStore:    NewInMemoryLocalSkillListStore(),
+		LocalSkillImportStore:  NewInMemoryLocalSkillImportStore(),
+		LivenessStore:          NewNoopLivenessStore(),
+		HeartbeatScheduler:     NewPassthroughHeartbeatScheduler(queries),
+		Storage:                store,
+		CFSigner:               cfSigner,
+		Analytics:              analyticsClient,
+		WebhookRateLimiter:     NewMemoryWebhookRateLimiter(DefaultWebhookRateLimit()),
+		WebhookIPRateLimiter:   NewMemoryWebhookIPRateLimiter(DefaultWebhookIPRateLimit()),
+		WebPushTestRateLimiter: NewMemoryWebhookRateLimiter(DefaultWebPushTestRateLimit()),
 		CloudRuntime: cloudruntime.NewClient(cloudruntime.Config{
 			BaseURL: cfg.CloudRuntimeFleetURL,
 			Timeout: cfg.CloudRuntimeFleetTimeout,

@@ -124,6 +124,9 @@ async function performReconciliation(apiClient: ApiClient): Promise<WebPushState
   let candidateSubscription: PushSubscription | null = null;
   try {
     const config = await apiClient.getWebPushConfig();
+    if (generation !== subscriptionGeneration) {
+      return stateForPermission(getWebNotificationPermission());
+    }
     if (config.enabled !== true) {
       activeSubscription = null;
       return { status: "server-disabled", permission, subscribed: false };
@@ -142,11 +145,22 @@ async function performReconciliation(apiClient: ApiClient): Promise<WebPushState
     }
 
     const applicationServerKey = base64UrlToUint8Array(config.publicKey);
-    const registration = await navigator.serviceWorker.register(
+    await navigator.serviceWorker.register(
       "/multica-push-sw.js",
       { scope: "/" },
     );
+    if (generation !== subscriptionGeneration) {
+      return stateForPermission(getWebNotificationPermission());
+    }
+    const registration = await navigator.serviceWorker.ready;
+    if (generation !== subscriptionGeneration) {
+      return stateForPermission(getWebNotificationPermission());
+    }
     let subscription = await registration.pushManager.getSubscription();
+    if (generation !== subscriptionGeneration) {
+      if (subscription) await subscription.unsubscribe().catch(() => false);
+      return stateForPermission(getWebNotificationPermission());
+    }
 
     if (
       subscription &&
@@ -164,10 +178,18 @@ async function performReconciliation(apiClient: ApiClient): Promise<WebPushState
       activeSubscription = null;
     }
 
+    if (generation !== subscriptionGeneration) {
+      return stateForPermission(getWebNotificationPermission());
+    }
+
     subscription ??= await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey,
     });
+    if (generation !== subscriptionGeneration) {
+      await subscription.unsubscribe().catch(() => false);
+      return stateForPermission(getWebNotificationPermission());
+    }
     candidateSubscription = subscription;
     pendingSubscription = subscription;
     await apiClient.upsertWebPushSubscription(serializeSubscription(subscription));
@@ -208,21 +230,47 @@ export async function enableWebPushSubscription(
   return reconcileWebPushSubscription(apiClient);
 }
 
-export function cleanupWebPushOnLogout(apiClient: ApiClient = api): void {
+async function getPersistedSubscription(): Promise<PushSubscription | null> {
+  if (
+    typeof navigator === "undefined" ||
+    !("serviceWorker" in navigator) ||
+    typeof navigator.serviceWorker.getRegistration !== "function"
+  ) {
+    return null;
+  }
+  try {
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    return (await registration?.pushManager.getSubscription()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function cleanupWebPushOnLogout(
+  apiClient: ApiClient = api,
+): Promise<void> {
   subscriptionGeneration += 1;
   reconciliationPromise = null;
-  const subscriptions = new Set(
-    [activeSubscription, pendingSubscription].filter(
-      (subscription): subscription is PushSubscription => subscription !== null,
-    ),
-  );
+  const subscriptions = new Map<string, PushSubscription>();
+  for (const subscription of [activeSubscription, pendingSubscription]) {
+    if (subscription) subscriptions.set(subscription.endpoint, subscription);
+  }
   activeSubscription = null;
   pendingSubscription = null;
 
-  for (const subscription of subscriptions) {
-    void apiClient.deleteWebPushSubscription(subscription.endpoint).catch(() => {});
-    void subscription.unsubscribe().catch(() => {});
+  const persistedSubscription = await getPersistedSubscription();
+  if (persistedSubscription) {
+    subscriptions.set(persistedSubscription.endpoint, persistedSubscription);
   }
+
+  await Promise.all(
+    Array.from(subscriptions.values(), async (subscription) => {
+      await Promise.allSettled([
+        apiClient.deleteWebPushSubscription(subscription.endpoint),
+        subscription.unsubscribe(),
+      ]);
+    }),
+  );
 }
 
 export async function sendWebPushTest(apiClient: ApiClient = api): Promise<void> {

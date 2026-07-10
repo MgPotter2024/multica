@@ -34,7 +34,7 @@ The new path registers a service worker and Push subscription, persists it for t
 - R2. The sender must skip workspaces where `system_notifications` is muted and must never change inbox persistence.
 - R3. The service worker must suppress a banner when any same-origin Multica window is focused.
 - R4. Notification clicks must open the source workspace inbox and select the source issue or inbox item.
-- R5. Subscription endpoints must be authenticated, user-scoped, validated, idempotent, and isolated across accounts.
+- R5. Subscription endpoints must be human-authenticated, user-scoped, validated, idempotent, bounded per user, and isolated across accounts.
 - R6. Push endpoints returning HTTP 404 or 410 must be removed; transient failures must retain the subscription for later delivery.
 - R7. VAPID private material must be read only from server environment and never exposed through logs, responses, or frontend assets.
 - R8. Browsers without Push support must retain the existing open-page Notification API fallback.
@@ -69,6 +69,8 @@ The new path registers a service worker and Push subscription, persists it for t
 - KTD5. Register a same-origin service worker from the web shell and reconcile the subscription on dashboard mount.
 - KTD6. Use the existing Notification API only when Push or service workers are unsupported; supported subscribed clients rely on the service worker to avoid duplicate banners.
 - KTD7. Expose only VAPID availability and public key through the API; use environment variables for private key and subject.
+- KTD8. Reject partial or invalid VAPID configuration at startup; only an all-empty configuration intentionally disables Web Push.
+- KTD9. Allow at most five subscriptions per user, throttle explicit test sends, and permit cross-account endpoint transfer only when the browser encryption keys match.
 
 ### High-Level Technical Design
 
@@ -108,24 +110,24 @@ sequenceDiagram
 
 - **Requirements:** R5, R6, R7.
 - **Files:** `server/migrations/`, `server/pkg/db/queries/web_push_subscription.sql`, `server/pkg/db/generated/`.
-- **Approach:** Add a user-scoped subscription table with unique endpoint, encrypted-key fields, timestamps, and cascade deletion; add list, upsert, delete-by-endpoint, and delete-by-id queries.
-- **Test scenarios:** New insert, idempotent endpoint update, endpoint reassignment to the current authenticated user, user-scoped list, cascade delete, terminal cleanup.
+- **Approach:** Add a user-scoped subscription table with unique endpoint, encrypted-key fields, timestamps, and cascade deletion; add list, transactional bounded upsert, delete-by-endpoint, and delete-by-id queries.
+- **Test scenarios:** New insert, idempotent same-user key rotation, matching-key cross-user transfer, mismatched-key rejection, five-device cap, concurrent writes, user-scoped list, cascade delete, terminal cleanup.
 - **Verification:** Run migrations on a clean test database, regenerate sqlc, and run focused query-backed tests.
 
 ### U2. Add authenticated subscription API and dispatcher
 
 - **Requirements:** R1, R2, R4-R7.
 - **Files:** `server/internal/handler/web_push.go`, `server/internal/webpush/`, `server/cmd/server/router.go`, `server/cmd/server/main.go`, `server/go.mod`, `server/go.sum`.
-- **Approach:** Add config, subscribe/unsubscribe/test endpoints, strict request validation, an `inbox:new` listener, preference gating, payload construction, bounded asynchronous sending, and 404/410 cleanup.
+- **Approach:** Add human-only config, subscribe/unsubscribe/test endpoints, strict request validation, test-send throttling, fail-fast VAPID startup, an `inbox:new` listener, preference gating, payload construction, buffered lossless worker dispatch, and 404/410 cleanup.
 - **Execution note:** Write handler and dispatcher regression tests before production implementation.
-- **Test scenarios:** Disabled config, config response, auth failure, invalid endpoint/key, idempotent subscribe, cross-user isolation, muted preference, successful send, transient send error, terminal cleanup, test endpoint.
+- **Test scenarios:** Disabled config, invalid-config startup failure, human/machine actor authorization, config response, invalid endpoint/key, idempotent subscribe, cross-user isolation, burst backpressure, muted preference, successful send, transient send error, terminal cleanup, rate-limited test endpoint.
 - **Verification:** Run focused package tests and `cd server && go test ./...`.
 
 ### U3. Add typed frontend Push client
 
 - **Requirements:** R5, R7-R9.
 - **Files:** `packages/core/api/client.ts`, `packages/core/api/schemas.ts`, `packages/core/types/`, `packages/core/platform/web-push.ts`, corresponding tests.
-- **Approach:** Add parsed API responses, base64url conversion, service-worker registration, subscription reconciliation, logout-safe unsubscribe, and explicit effective-state reporting.
+- **Approach:** Add parsed API responses, base64url conversion, activation-aware service-worker registration, subscription reconciliation, persisted logout-safe unsubscribe before auth clearing, and explicit effective-state reporting.
 - **Execution note:** Add failing pure-function and API parsing tests before implementation.
 - **Test scenarios:** Malformed config response, unsupported platform, missing key, existing subscription, renewed subscription, backend resync, permission denied, logout cleanup.
 - **Verification:** Run focused core tests and typecheck.

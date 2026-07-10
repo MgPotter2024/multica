@@ -36,7 +36,7 @@ function makeSubscription(
   };
 }
 
-function installPushBrowser(
+function makeRegistration(
   subscription: PushSubscription | null,
   subscribe = vi.fn<PushManager["subscribe"]>(),
 ) {
@@ -45,14 +45,39 @@ function installPushBrowser(
     permissionState: vi.fn(),
     subscribe,
   } as unknown as PushManager;
-  const registration = { pushManager } as ServiceWorkerRegistration;
-  const register = vi.fn().mockResolvedValue(registration);
+  return {
+    pushManager,
+    registration: { pushManager } as ServiceWorkerRegistration,
+  };
+}
+
+function installPushBrowser(
+  subscription: PushSubscription | null,
+  subscribe = vi.fn<PushManager["subscribe"]>(),
+  options: {
+    registered?: ServiceWorkerRegistration;
+    ready?: Promise<ServiceWorkerRegistration>;
+    persisted?: ServiceWorkerRegistration | null;
+  } = {},
+) {
+  const { pushManager, registration } = makeRegistration(
+    subscription,
+    subscribe,
+  );
+  const registered = options.registered ?? registration;
+  const ready = options.ready ?? Promise.resolve(registration);
+  const persisted =
+    options.persisted === undefined ? registration : options.persisted;
+  const register = vi.fn().mockResolvedValue(registered);
+  const getRegistration = vi.fn().mockResolvedValue(persisted);
   vi.stubGlobal("window", {
     Notification: FakeNotification,
     PushManager: class {},
   });
-  vi.stubGlobal("navigator", { serviceWorker: { register } });
-  return { pushManager, register, registration };
+  vi.stubGlobal("navigator", {
+    serviceWorker: { register, ready, getRegistration },
+  });
+  return { pushManager, register, registration, getRegistration };
 }
 
 function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
@@ -67,8 +92,8 @@ function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
   } as unknown as ApiClient;
 }
 
-afterEach(() => {
-  cleanupWebPushOnLogout(makeApi());
+afterEach(async () => {
+  await cleanupWebPushOnLogout(makeApi());
   FakeNotification.permission = "granted";
   FakeNotification.requestPermission.mockClear();
   vi.unstubAllGlobals();
@@ -83,6 +108,34 @@ describe("base64UrlToUint8Array", () => {
 });
 
 describe("reconcileWebPushSubscription", () => {
+  it("waits for the first service worker to activate before using PushManager", async () => {
+    let activate: ((registration: ServiceWorkerRegistration) => void) | undefined;
+    const ready = new Promise<ServiceWorkerRegistration>((resolve) => {
+      activate = resolve;
+    });
+    const installing = makeRegistration(null);
+    const subscription = makeSubscription(new Uint8Array([4, 1, 2, 3]));
+    const subscribe = vi.fn().mockResolvedValue(subscription);
+    const active = makeRegistration(null, subscribe);
+    const { register } = installPushBrowser(null, vi.fn(), {
+      registered: installing.registration,
+      ready,
+      persisted: active.registration,
+    });
+    const reconciliation = reconcileWebPushSubscription(makeApi());
+
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(1));
+    expect(installing.pushManager.getSubscription).not.toHaveBeenCalled();
+    expect(active.pushManager.getSubscription).not.toHaveBeenCalled();
+    activate?.(active.registration);
+
+    await expect(reconciliation).resolves.toMatchObject({
+      status: "subscribed",
+    });
+    expect(active.pushManager.getSubscription).toHaveBeenCalledTimes(1);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("resyncs an existing matching browser subscription to the backend", async () => {
     const subscription = makeSubscription(new Uint8Array([4, 1, 2, 3]));
     const { pushManager, register } = installPushBrowser(subscription);
@@ -212,19 +265,31 @@ describe("enableWebPushSubscription", () => {
 });
 
 describe("cleanupWebPushOnLogout", () => {
+  it("discovers and removes a persisted subscription when module memory is empty", async () => {
+    const subscription = makeSubscription(new Uint8Array([4, 1, 2, 3]));
+    const { getRegistration } = installPushBrowser(subscription);
+    const api = makeApi();
+
+    await cleanupWebPushOnLogout(api);
+
+    expect(getRegistration).toHaveBeenCalledWith("/");
+    expect(api.deleteWebPushSubscription).toHaveBeenCalledWith(
+      subscription.endpoint,
+    );
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("deletes the backend binding and unsubscribes the cached browser endpoint", async () => {
     const subscription = makeSubscription(new Uint8Array([4, 1, 2, 3]));
     installPushBrowser(subscription);
     const api = makeApi();
     await reconcileWebPushSubscription(api);
 
-    cleanupWebPushOnLogout(api);
-    await vi.waitFor(() => {
-      expect(api.deleteWebPushSubscription).toHaveBeenCalledWith(
-        subscription.endpoint,
-      );
-      expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
-    });
+    await cleanupWebPushOnLogout(api);
+    expect(api.deleteWebPushSubscription).toHaveBeenCalledWith(
+      subscription.endpoint,
+    );
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
     expect(hasActiveWebPushSubscription()).toBe(false);
   });
 
@@ -253,7 +318,7 @@ describe("cleanupWebPushOnLogout", () => {
       onBeforeLogout: () => cleanupWebPushOnLogout(api),
     });
 
-    store.getState().logout();
+    await store.getState().logout();
 
     expect(deleteSawValidAuth).toBe(true);
     expect(api.setToken).toHaveBeenCalledWith(null);

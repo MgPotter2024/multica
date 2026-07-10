@@ -27,7 +27,7 @@ export function useLogout() {
   const authLogout = useAuthStore((s) => s.logout);
   const { push } = useNavigation();
 
-  return useCallback(() => {
+  return useCallback(async () => {
     // Clear workspace-scoped storage for every workspace this user has
     // access to, BEFORE clearing the React Query cache (which holds the
     // workspace list). Otherwise per-workspace drafts/chat/etc would leak
@@ -51,8 +51,8 @@ export function useLogout() {
     // machine. No-op on web (web doesn't write this key).
     defaultStorage.removeItem("multica_tabs");
 
+    await authLogout();
     queryClient.clear();
-    authLogout();
 
     // Navigate to /login explicitly. authLogout() clears state but doesn't
     // move the URL — without this the caller might be on a workspace URL

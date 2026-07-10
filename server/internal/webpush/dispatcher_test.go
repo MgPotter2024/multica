@@ -36,6 +36,8 @@ type fakeStore struct {
 	subscriptions []db.WebPushSubscription
 	listErr       error
 	listBlock     <-chan struct{}
+	listStarted   chan struct{}
+	listStartOnce sync.Once
 	deleted       []pgtype.UUID
 }
 
@@ -48,6 +50,9 @@ func (s *fakeStore) GetWorkspace(_ context.Context, _ pgtype.UUID) (db.Workspace
 }
 
 func (s *fakeStore) ListWebPushSubscriptionsByUser(_ context.Context, _ pgtype.UUID) ([]db.WebPushSubscription, error) {
+	if s.listStarted != nil {
+		s.listStartOnce.Do(func() { close(s.listStarted) })
+	}
 	if s.listBlock != nil {
 		<-s.listBlock
 	}
@@ -252,6 +257,109 @@ func TestRegisteredListenerDoesNotBlockEventPublication(t *testing.T) {
 		t.Fatal("inbox:new publication blocked on push delivery")
 	}
 	close(release)
+}
+
+func TestRegisteredListenerQueuesNormalBurstWithoutDropping(t *testing.T) {
+	const burstSize = 64
+	release := make(chan struct{})
+	delivered := make(chan struct{}, burstSize)
+	store := &fakeStore{
+		preferenceErr: pgx.ErrNoRows,
+		workspace:     db.Workspace{Slug: "acme"},
+		subscriptions: []db.WebPushSubscription{testStoredSubscription()},
+		listBlock:     release,
+	}
+	dispatcher := NewDispatcher(store, enabledTestConfig(t), WithSender(senderFunc(
+		func(context.Context, []byte, *webpushgo.Subscription, *webpushgo.Options) (*http.Response, error) {
+			delivered <- struct{}{}
+			return response(http.StatusCreated), nil
+		},
+	)))
+	bus := events.New()
+	dispatcher.Register(bus)
+
+	published := make(chan struct{})
+	go func() {
+		for index := 0; index < burstSize; index++ {
+			bus.Publish(testInboxEvent())
+		}
+		close(published)
+	}()
+	select {
+	case <-published:
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		t.Fatal("inbox:new burst blocked on push delivery")
+	}
+	close(release)
+
+	for index := 0; index < burstSize; index++ {
+		select {
+		case <-delivered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("delivered %d of %d queued pushes", index, burstSize)
+		}
+	}
+}
+
+func TestRegisteredListenerBackpressuresAtCapacityWithoutDropping(t *testing.T) {
+	const deliveryCount = defaultQueueCapacity + 2
+	release := make(chan struct{})
+	listStarted := make(chan struct{})
+	delivered := make(chan struct{}, deliveryCount)
+	store := &fakeStore{
+		preferenceErr: pgx.ErrNoRows,
+		workspace:     db.Workspace{Slug: "acme"},
+		subscriptions: []db.WebPushSubscription{testStoredSubscription()},
+		listBlock:     release,
+		listStarted:   listStarted,
+	}
+	dispatcher := NewDispatcher(store, enabledTestConfig(t), WithSender(senderFunc(
+		func(context.Context, []byte, *webpushgo.Subscription, *webpushgo.Options) (*http.Response, error) {
+			delivered <- struct{}{}
+			return response(http.StatusCreated), nil
+		},
+	)))
+	dispatcher.workerCount = 1
+	bus := events.New()
+	dispatcher.Register(bus)
+
+	bus.Publish(testInboxEvent())
+	select {
+	case <-listStarted:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("worker did not begin the first delivery")
+	}
+	for index := 0; index < defaultQueueCapacity; index++ {
+		bus.Publish(testInboxEvent())
+	}
+
+	overflowReturned := make(chan struct{})
+	go func() {
+		bus.Publish(testInboxEvent())
+		close(overflowReturned)
+	}()
+	select {
+	case <-overflowReturned:
+		close(release)
+		t.Fatal("capacity+1 publish returned before queue capacity was available")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-overflowReturned:
+	case <-time.After(time.Second):
+		t.Fatal("capacity+1 publish did not resume after queue capacity was available")
+	}
+
+	for index := 0; index < deliveryCount; index++ {
+		select {
+		case <-delivered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("delivered %d of %d queued pushes", index, deliveryCount)
+		}
+	}
 }
 
 func TestSendTestReportsMissingSubscription(t *testing.T) {

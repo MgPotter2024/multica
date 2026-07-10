@@ -23,7 +23,7 @@ export async function reauthenticateDaemon(): Promise<void> {
   const token = localStorage.getItem("multica_token");
   if (!user || !token) {
     // No usable session at all — the standard recovery is the login page.
-    useAuthStore.getState().logout();
+    await useAuthStore.getState().logout();
     return;
   }
 
@@ -32,7 +32,7 @@ export async function reauthenticateDaemon(): Promise<void> {
     if (result.ok) return; // daemon restarting; status flips via onStatusChange
     if (result.reason === "session_invalid") {
       // The session token itself is rejected (401) — full re-login.
-      useAuthStore.getState().logout();
+      await useAuthStore.getState().logout();
       return;
     }
     // Transient failure — keep the user signed in and let them retry.

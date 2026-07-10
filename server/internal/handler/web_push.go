@@ -7,14 +7,24 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	webpushinternal "github.com/multica-ai/multica/server/internal/webpush"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-const webPushRequestBodyLimit = 8 << 10
+const (
+	webPushRequestBodyLimit        = 8 << 10
+	maxWebPushSubscriptionsPerUser = 5
+)
+
+var (
+	errWebPushEndpointOwned = errors.New("web push endpoint belongs to another user")
+	errWebPushLimitReached  = errors.New("web push subscription limit reached")
+)
 
 type WebPushService interface {
 	Enabled() bool
@@ -66,13 +76,21 @@ func (h *Handler) PutWebPushSubscription(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	stored, err := h.Queries.UpsertWebPushSubscription(r.Context(), db.UpsertWebPushSubscriptionParams{
+	stored, err := h.saveWebPushSubscription(r.Context(), db.UpsertWebPushSubscriptionParams{
 		UserID:   userUUID,
 		Endpoint: subscription.Endpoint,
 		P256dh:   subscription.Keys.P256dh,
 		Auth:     subscription.Keys.Auth,
 	})
 	if err != nil {
+		switch {
+		case errors.Is(err, errWebPushEndpointOwned):
+			writeError(w, http.StatusConflict, "web push endpoint belongs to another account")
+			return
+		case errors.Is(err, errWebPushLimitReached):
+			writeError(w, http.StatusConflict, "web push subscription limit reached")
+			return
+		}
 		slog.Warn("UpsertWebPushSubscription failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save web push subscription")
 		return
@@ -125,6 +143,10 @@ func (h *Handler) SendWebPushTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "web push is not configured")
 		return
 	}
+	if h.WebPushTestRateLimiter != nil && !h.WebPushTestRateLimiter.Allow(r.Context(), userID) {
+		writeError(w, http.StatusTooManyRequests, "web push test rate limit exceeded")
+		return
+	}
 	result, err := h.WebPush.SendTest(r.Context(), userID)
 	if err != nil {
 		switch {
@@ -139,6 +161,58 @@ func (h *Handler) SendWebPushTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func DefaultWebPushTestRateLimit() WebhookRateLimit {
+	return WebhookRateLimit{Limit: 5, Window: time.Minute}
+}
+
+func (h *Handler) saveWebPushSubscription(ctx context.Context, params db.UpsertWebPushSubscriptionParams) (db.WebPushSubscription, error) {
+	var empty db.WebPushSubscription
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return empty, err
+	}
+	defer tx.Rollback(ctx)
+	queries := h.Queries.WithTx(tx)
+
+	if _, err := queries.LockWebPushSubscriptionUser(ctx, params.UserID); err != nil {
+		return empty, err
+	}
+	existingForUser := false
+	existing, err := queries.GetWebPushSubscriptionByEndpointForUpdate(ctx, params.Endpoint)
+	switch {
+	case err == nil:
+		existingForUser = existing.UserID == params.UserID
+		if !existingForUser && (existing.P256dh != params.P256dh || existing.Auth != params.Auth) {
+			return empty, errWebPushEndpointOwned
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+	default:
+		return empty, err
+	}
+
+	if !existingForUser {
+		count, err := queries.CountWebPushSubscriptionsByUser(ctx, params.UserID)
+		if err != nil {
+			return empty, err
+		}
+		if count >= int64(maxWebPushSubscriptionsPerUser) {
+			return empty, errWebPushLimitReached
+		}
+	}
+
+	stored, err := queries.UpsertWebPushSubscription(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return empty, errWebPushEndpointOwned
+	}
+	if err != nil {
+		return empty, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return empty, err
+	}
+	return stored, nil
 }
 
 func decodeWebPushBody(w http.ResponseWriter, r *http.Request, destination any) error {

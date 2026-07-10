@@ -147,6 +147,9 @@ VAPID_PRIVATE_KEY=<private-key>
 VAPID_SUBJECT=mailto:ops@example.com
 ```
 
+Leave all three values empty to disable Web Push. A partial, malformed, or mismatched VAPID
+configuration prevents the backend from starting instead of silently disabling notifications.
+
 Treat `VAPID_PRIVATE_KEY` as a production secret: keep it in the VPS secret store or untracked `.env`, never commit it, and never capture it in tickets, chat, shared shell transcripts, or build logs. Restart only the backend after changing these values:
 
 ```bash

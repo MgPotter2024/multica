@@ -8,7 +8,7 @@ export interface AuthStoreOptions {
   api: ApiClient;
   storage: StorageAdapter;
   onLogin?: () => void;
-  onBeforeLogout?: () => void;
+  onBeforeLogout?: () => void | Promise<void>;
   onLogout?: () => void;
   /** When true, rely on HttpOnly cookies instead of localStorage for auth tokens. */
   cookieAuth?: boolean;
@@ -23,7 +23,7 @@ export interface AuthState {
   verifyCode: (email: string, code: string) => Promise<User>;
   loginWithGoogle: (code: string, redirectUri: string) => Promise<User>;
   loginWithToken: (token: string) => Promise<User>;
-  logout: () => void;
+  logout: () => Promise<void>;
   setUser: (user: User) => void;
   refreshMe: () => Promise<void>;
 }
@@ -114,8 +114,14 @@ export function createAuthStore(options: AuthStoreOptions) {
       return user;
     },
 
-    logout: () => {
-      onBeforeLogout?.();
+    logout: async () => {
+      if (onBeforeLogout) {
+        try {
+          await onBeforeLogout();
+        } catch {
+          // Platform cleanup is best-effort and must not trap the user in-session.
+        }
+      }
       if (cookieAuth) {
         // Clear server-side HttpOnly cookie.
         api.logout().catch(() => {});

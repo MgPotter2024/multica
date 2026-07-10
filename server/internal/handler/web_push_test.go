@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +23,7 @@ type fakeWebPushService struct {
 	result    webpushinternal.DeliveryResult
 	err       error
 	userID    string
+	calls     int
 }
 
 func (s *fakeWebPushService) Enabled() bool { return s.enabled }
@@ -30,6 +32,7 @@ func (s *fakeWebPushService) PublicKey() string { return s.publicKey }
 
 func (s *fakeWebPushService) SendTest(_ context.Context, userID string) (webpushinternal.DeliveryResult, error) {
 	s.userID = userID
+	s.calls++
 	return s.result, s.err
 }
 
@@ -86,7 +89,7 @@ func TestPutWebPushSubscriptionValidatesAndRequiresAuth(t *testing.T) {
 	})
 }
 
-func TestWebPushSubscriptionUpsertReassignAndUserScopedDelete(t *testing.T) {
+func TestWebPushSubscriptionOwnershipAndUserScopedDelete(t *testing.T) {
 	withWebPushService(t, &fakeWebPushService{enabled: true})
 	endpoint := "https://updates.push.services.mozilla.com/wpush/v2/handler-reassign"
 	_, _ = testPool.Exec(context.Background(), `DELETE FROM web_push_subscription WHERE endpoint = $1`, endpoint)
@@ -94,19 +97,19 @@ func TestWebPushSubscriptionUpsertReassignAndUserScopedDelete(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM web_push_subscription WHERE endpoint = $1`, endpoint)
 	})
 
-	put := func(userID string, subscription webpushinternal.Subscription) {
+	put := func(userID string, subscription webpushinternal.Subscription, wantStatus int) {
 		t.Helper()
 		w := httptest.NewRecorder()
 		req := newRequest(http.MethodPut, "/api/web-push/subscription", subscription)
 		req.Header.Set("X-User-ID", userID)
 		testHandler.PutWebPushSubscription(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("PUT status = %d, body = %s", w.Code, w.Body.String())
+		if w.Code != wantStatus {
+			t.Fatalf("PUT status = %d, want %d, body = %s", w.Code, wantStatus, w.Body.String())
 		}
 	}
 
 	first := handlerPushSubscription(endpoint)
-	put(testUserID, first)
+	put(testUserID, first, http.StatusOK)
 	rows, err := testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(testUserID))
 	if err != nil {
 		t.Fatalf("list first user subscriptions: %v", err)
@@ -115,6 +118,16 @@ func TestWebPushSubscriptionUpsertReassignAndUserScopedDelete(t *testing.T) {
 		t.Fatalf("first user rows = %+v", rows)
 	}
 	firstID := rows[0].ID
+	rotated := first
+	rotated.Keys.Auth = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 16))
+	put(testUserID, rotated, http.StatusOK)
+	rows, err = testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(testUserID))
+	if err != nil {
+		t.Fatalf("list first user after rotation: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != firstID || rows[0].Auth != rotated.Keys.Auth {
+		t.Fatalf("same-user rotation row = %+v", rows)
+	}
 
 	var otherUserID string
 	if err := testPool.QueryRow(context.Background(), `
@@ -126,9 +139,18 @@ func TestWebPushSubscriptionUpsertReassignAndUserScopedDelete(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, otherUserID)
 	})
 
-	second := handlerPushSubscription(endpoint)
-	second.Keys.Auth = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 16))
-	put(otherUserID, second)
+	mismatched := rotated
+	mismatched.Keys.Auth = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 16))
+	put(otherUserID, mismatched, http.StatusConflict)
+	rows, err = testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(testUserID))
+	if err != nil {
+		t.Fatalf("list first user after rejected reassignment: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != firstID || rows[0].Auth != rotated.Keys.Auth {
+		t.Fatalf("rejected reassignment changed owner row = %+v", rows)
+	}
+
+	put(otherUserID, rotated, http.StatusOK)
 
 	rows, err = testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(testUserID))
 	if err != nil {
@@ -141,7 +163,7 @@ func TestWebPushSubscriptionUpsertReassignAndUserScopedDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list second user subscriptions: %v", err)
 	}
-	if len(otherRows) != 1 || otherRows[0].ID != firstID || otherRows[0].Auth != second.Keys.Auth {
+	if len(otherRows) != 1 || otherRows[0].ID != firstID || otherRows[0].Auth != rotated.Keys.Auth {
 		t.Fatalf("reassigned row = %+v", otherRows)
 	}
 
@@ -165,6 +187,103 @@ func TestWebPushSubscriptionUpsertReassignAndUserScopedDelete(t *testing.T) {
 	otherRows, err = testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(otherUserID))
 	if err != nil || len(otherRows) != 0 {
 		t.Fatalf("owner delete failed: rows=%+v err=%v", otherRows, err)
+	}
+}
+
+func TestWebPushSubscriptionLimitAllowsExistingDeviceRotation(t *testing.T) {
+	withWebPushService(t, &fakeWebPushService{enabled: true})
+	var userID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO "user" (name, email) VALUES ($1, $2) RETURNING id
+	`, "Web Push Limit", "web-push-limit@example.com").Scan(&userID); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, userID)
+	})
+
+	put := func(subscription webpushinternal.Subscription) int {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPut, "/api/web-push/subscription", subscription)
+		req.Header.Set("X-User-ID", userID)
+		testHandler.PutWebPushSubscription(w, req)
+		return w.Code
+	}
+
+	for index := 0; index < maxWebPushSubscriptionsPerUser; index++ {
+		subscription := handlerPushSubscription(fmt.Sprintf("https://push.example.com/limit-%d", index))
+		if status := put(subscription); status != http.StatusOK {
+			t.Fatalf("subscription %d status = %d", index, status)
+		}
+	}
+	if status := put(handlerPushSubscription("https://push.example.com/limit-overflow")); status != http.StatusConflict {
+		t.Fatalf("overflow status = %d, want 409", status)
+	}
+
+	rotated := handlerPushSubscription("https://push.example.com/limit-0")
+	rotated.Keys.Auth = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 16))
+	if status := put(rotated); status != http.StatusOK {
+		t.Fatalf("existing device rotation status = %d, want 200", status)
+	}
+	rows, err := testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(userID))
+	if err != nil {
+		t.Fatalf("list subscriptions: %v", err)
+	}
+	if len(rows) != maxWebPushSubscriptionsPerUser {
+		t.Fatalf("subscription count = %d, want %d", len(rows), maxWebPushSubscriptionsPerUser)
+	}
+}
+
+func TestWebPushSubscriptionLimitIsAtomic(t *testing.T) {
+	withWebPushService(t, &fakeWebPushService{enabled: true})
+	var userID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO "user" (name, email) VALUES ($1, $2) RETURNING id
+	`, "Web Push Concurrent Limit", "web-push-concurrent-limit@example.com").Scan(&userID); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, userID)
+	})
+
+	const attempts = maxWebPushSubscriptionsPerUser + 3
+	start := make(chan struct{})
+	statuses := make(chan int, attempts)
+	for index := 0; index < attempts; index++ {
+		go func(index int) {
+			<-start
+			response := httptest.NewRecorder()
+			subscription := handlerPushSubscription(fmt.Sprintf("https://push.example.com/concurrent-limit-%d", index))
+			request := newRequest(http.MethodPut, "/api/web-push/subscription", subscription)
+			request.Header.Set("X-User-ID", userID)
+			testHandler.PutWebPushSubscription(response, request)
+			statuses <- response.Code
+		}(index)
+	}
+	close(start)
+
+	accepted := 0
+	rejected := 0
+	for index := 0; index < attempts; index++ {
+		switch status := <-statuses; status {
+		case http.StatusOK:
+			accepted++
+		case http.StatusConflict:
+			rejected++
+		default:
+			t.Fatalf("unexpected concurrent PUT status = %d", status)
+		}
+	}
+	if accepted != maxWebPushSubscriptionsPerUser || rejected != attempts-maxWebPushSubscriptionsPerUser {
+		t.Fatalf("accepted=%d rejected=%d", accepted, rejected)
+	}
+	rows, err := testHandler.Queries.ListWebPushSubscriptionsByUser(context.Background(), parseUUID(userID))
+	if err != nil {
+		t.Fatalf("list subscriptions: %v", err)
+	}
+	if len(rows) != maxWebPushSubscriptionsPerUser {
+		t.Fatalf("subscription count = %d, want %d", len(rows), maxWebPushSubscriptionsPerUser)
 	}
 }
 
@@ -218,6 +337,28 @@ func TestSendWebPushTest(t *testing.T) {
 	}
 	if result.Sent != 1 {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSendWebPushTestRateLimitedPerUser(t *testing.T) {
+	service := &fakeWebPushService{enabled: true, result: webpushinternal.DeliveryResult{Sent: 1}}
+	withWebPushService(t, service)
+	previous := testHandler.WebPushTestRateLimiter
+	testHandler.WebPushTestRateLimiter = NewMemoryWebhookRateLimiter(WebhookRateLimit{Limit: 1, Window: time.Minute})
+	t.Cleanup(func() { testHandler.WebPushTestRateLimiter = previous })
+
+	first := httptest.NewRecorder()
+	testHandler.SendWebPushTest(first, newRequest(http.MethodPost, "/api/web-push/test", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
+	}
+	second := httptest.NewRecorder()
+	testHandler.SendWebPushTest(second, newRequest(http.MethodPost, "/api/web-push/test", nil))
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429, body = %s", second.Code, second.Body.String())
+	}
+	if service.calls != 1 {
+		t.Fatalf("SendTest calls = %d, want 1", service.calls)
 	}
 }
 

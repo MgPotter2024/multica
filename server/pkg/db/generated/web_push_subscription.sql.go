@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countWebPushSubscriptionsByUser = `-- name: CountWebPushSubscriptionsByUser :one
+SELECT count(*) FROM web_push_subscription
+WHERE user_id = $1
+`
+
+func (q *Queries) CountWebPushSubscriptionsByUser(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countWebPushSubscriptionsByUser, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteWebPushSubscriptionByEndpoint = `-- name: DeleteWebPushSubscriptionByEndpoint :execrows
 DELETE FROM web_push_subscription
 WHERE user_id = $1 AND endpoint = $2
@@ -37,6 +49,27 @@ WHERE id = $1
 func (q *Queries) DeleteWebPushSubscriptionByID(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWebPushSubscriptionByID, id)
 	return err
+}
+
+const getWebPushSubscriptionByEndpointForUpdate = `-- name: GetWebPushSubscriptionByEndpointForUpdate :one
+SELECT id, user_id, endpoint, p256dh, auth, created_at, updated_at FROM web_push_subscription
+WHERE endpoint = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetWebPushSubscriptionByEndpointForUpdate(ctx context.Context, endpoint string) (WebPushSubscription, error) {
+	row := q.db.QueryRow(ctx, getWebPushSubscriptionByEndpointForUpdate, endpoint)
+	var i WebPushSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Endpoint,
+		&i.P256dh,
+		&i.Auth,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const listWebPushSubscriptionsByUser = `-- name: ListWebPushSubscriptionsByUser :many
@@ -73,6 +106,19 @@ func (q *Queries) ListWebPushSubscriptionsByUser(ctx context.Context, userID pgt
 	return items, nil
 }
 
+const lockWebPushSubscriptionUser = `-- name: LockWebPushSubscriptionUser :one
+SELECT id FROM "user"
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockWebPushSubscriptionUser(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWebPushSubscriptionUser, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const upsertWebPushSubscription = `-- name: UpsertWebPushSubscription :one
 INSERT INTO web_push_subscription (user_id, endpoint, p256dh, auth)
 VALUES ($1, $2, $3, $4)
@@ -81,6 +127,11 @@ ON CONFLICT (endpoint) DO UPDATE SET
     p256dh = EXCLUDED.p256dh,
     auth = EXCLUDED.auth,
     updated_at = now()
+WHERE web_push_subscription.user_id = EXCLUDED.user_id
+   OR (
+       web_push_subscription.p256dh = EXCLUDED.p256dh
+       AND web_push_subscription.auth = EXCLUDED.auth
+   )
 RETURNING id, user_id, endpoint, p256dh, auth, created_at, updated_at
 `
 

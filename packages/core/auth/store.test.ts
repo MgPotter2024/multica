@@ -93,7 +93,37 @@ describe("authStore.initialize — token mode", () => {
 });
 
 describe("authStore.logout", () => {
-  it("starts platform cleanup before clearing authentication", () => {
+  it("awaits platform cleanup before clearing authentication", async () => {
+    const calls: string[] = [];
+    let finishCleanup: (() => void) | undefined;
+    const cleanup = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    const storage = makeStorage({ multica_token: "t" });
+    const api = {
+      setToken: vi.fn(() => calls.push("clear-token")),
+    } as unknown as ApiClient;
+    const store = createAuthStore({
+      api,
+      storage,
+      onBeforeLogout: () => {
+        calls.push("before-logout");
+        return cleanup;
+      },
+      onLogout: () => calls.push("after-logout"),
+    });
+
+    const logout = store.getState().logout();
+
+    expect(calls).toEqual(["before-logout"]);
+    expect(storage.snapshot().multica_token).toBe("t");
+    finishCleanup?.();
+    await logout;
+
+    expect(calls).toEqual(["before-logout", "clear-token", "after-logout"]);
+  });
+
+  it("clears state synchronously when no platform cleanup is registered", async () => {
     const calls: string[] = [];
     const storage = makeStorage({ multica_token: "t" });
     const api = {
@@ -102,12 +132,13 @@ describe("authStore.logout", () => {
     const store = createAuthStore({
       api,
       storage,
-      onBeforeLogout: () => calls.push("before-logout"),
       onLogout: () => calls.push("after-logout"),
     });
 
-    store.getState().logout();
+    const logout = store.getState().logout();
 
-    expect(calls).toEqual(["before-logout", "clear-token", "after-logout"]);
+    expect(calls).toEqual(["clear-token", "after-logout"]);
+    expect(storage.snapshot().multica_token).toBeUndefined();
+    await logout;
   });
 });

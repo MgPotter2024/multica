@@ -195,7 +195,7 @@ export function DesktopNavigationProvider({
     () => ({
       push: (path: string) => {
         if (path === "/login") {
-          useAuthStore.getState().logout();
+          void useAuthStore.getState().logout();
           return;
         }
         const active = currentActiveTab();

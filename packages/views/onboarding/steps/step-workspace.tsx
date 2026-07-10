@@ -409,7 +409,11 @@ export function StepWorkspace({
  * messaging; this component only provides the logout escape so a user who
  * landed here without an invitation is not trapped.
  */
-function CreationDisabledNotice({ onLogout }: { onLogout: () => void }) {
+function CreationDisabledNotice({
+  onLogout,
+}: {
+  onLogout: () => void | Promise<void>;
+}) {
   const { t } = useT("onboarding");
   return (
     <div className="flex flex-col gap-3">

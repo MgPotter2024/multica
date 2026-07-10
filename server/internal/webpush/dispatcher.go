@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -26,7 +27,8 @@ import (
 const (
 	defaultDeliveryTimeout = 5 * time.Second
 	defaultDispatchTimeout = 12 * time.Second
-	defaultMaxConcurrent   = 8
+	defaultWorkerCount     = 8
+	defaultQueueCapacity   = 256
 	defaultTTLSeconds      = 300
 	maxTitleRunes          = 180
 	maxBodyRunes           = 700
@@ -71,7 +73,9 @@ type Dispatcher struct {
 	httpClient      *http.Client
 	deliveryTimeout time.Duration
 	dispatchTimeout time.Duration
-	slots           chan struct{}
+	queue           chan events.Event
+	workerCount     int
+	startOnce       sync.Once
 }
 
 type PushPayload struct {
@@ -98,7 +102,8 @@ func NewDispatcher(store Store, config Config, options ...Option) *Dispatcher {
 		sender:          defaultSender{},
 		deliveryTimeout: defaultDeliveryTimeout,
 		dispatchTimeout: defaultDispatchTimeout,
-		slots:           make(chan struct{}, defaultMaxConcurrent),
+		queue:           make(chan events.Event, defaultQueueCapacity),
+		workerCount:     defaultWorkerCount,
 	}
 	dispatcher.httpClient = newRestrictedHTTPClient(dispatcher.deliveryTimeout)
 	for _, option := range options {
@@ -122,29 +127,44 @@ func (d *Dispatcher) Register(bus *events.Bus) {
 	if !d.Enabled() || bus == nil {
 		return
 	}
+	d.startWorkers()
 	bus.Subscribe(protocol.EventInboxNew, d.DispatchAsync)
 }
 
 func (d *Dispatcher) DispatchAsync(event events.Event) {
-	select {
-	case d.slots <- struct{}{}:
-		go func() {
-			defer func() {
-				<-d.slots
-				if recovered := recover(); recovered != nil {
-					slog.Error("web push dispatcher recovered panic",
-						"event_type", event.Type,
-						"recovered", recovered,
-						"stack", string(debug.Stack()),
-					)
-				}
-			}()
-			if err := d.Dispatch(context.Background(), event); err != nil {
-				slog.Warn("web push dispatch failed", "event_type", event.Type, "error", err)
-			}
-		}()
-	default:
-		slog.Warn("web push dispatch dropped because all delivery slots are busy")
+	if !d.Enabled() {
+		return
+	}
+	d.startWorkers()
+	d.queue <- event
+}
+
+func (d *Dispatcher) startWorkers() {
+	d.startOnce.Do(func() {
+		for worker := 0; worker < d.workerCount; worker++ {
+			go d.runWorker()
+		}
+	})
+}
+
+func (d *Dispatcher) runWorker() {
+	for event := range d.queue {
+		d.dispatchQueuedEvent(event)
+	}
+}
+
+func (d *Dispatcher) dispatchQueuedEvent(event events.Event) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("web push dispatcher recovered panic",
+				"event_type", event.Type,
+				"recovered", recovered,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	if err := d.Dispatch(context.Background(), event); err != nil {
+		slog.Warn("web push dispatch failed", "event_type", event.Type, "error", err)
 	}
 }
 

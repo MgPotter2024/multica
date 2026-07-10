@@ -352,7 +352,7 @@ func main() {
 	// shutdown so any pending bumps are flushed before we exit.
 	heartbeatScheduler := handler.NewBatchedHeartbeatScheduler(queries, handler.DefaultHeartbeatBatchInterval)
 
-	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
+	r, h, err := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:        httpMetrics,
 		BusinessMetrics:    businessMetrics,
 		DaemonHub:          daemonHub,
@@ -360,6 +360,10 @@ func main() {
 		FeatureFlags:       flags,
 		HeartbeatScheduler: heartbeatScheduler,
 	})
+	if err != nil {
+		slog.Error("failed to configure server router", "error", err)
+		os.Exit(1)
+	}
 
 	srv := &http.Server{
 		Addr:    ":" + port,
