@@ -6,6 +6,57 @@ afterEach(() => {
 });
 
 describe("ApiClient", () => {
+  it("uses the singular Web Push subscription contract", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    client.setToken("active-token");
+    const subscription = {
+      endpoint: "https://push.example.test/subscription/1",
+      keys: { p256dh: "p256dh-key", auth: "auth-key" },
+    };
+
+    await client.upsertWebPushSubscription(subscription);
+    await client.deleteWebPushSubscription(subscription.endpoint);
+    await client.testWebPushSubscription();
+
+    expect(fetchMock.mock.calls.map(([url, init]) => ({
+      url,
+      method: init?.method,
+      body: init?.body,
+      keepalive: init?.keepalive,
+    }))).toEqual([
+      {
+        url: "https://api.example.test/api/web-push/subscription",
+        method: "PUT",
+        body: JSON.stringify(subscription),
+        keepalive: undefined,
+      },
+      {
+        url: "https://api.example.test/api/web-push/subscription",
+        method: "DELETE",
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+        keepalive: true,
+      },
+      {
+        url: "https://api.example.test/api/web-push/test",
+        method: "POST",
+        body: undefined,
+        keepalive: undefined,
+      },
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer active-token",
+    });
+  });
+
   it("preserves HTTP status on failed requests", async () => {
     vi.stubGlobal(
       "fetch",

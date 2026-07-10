@@ -24,6 +24,11 @@ import {
   resolveInboxSourceSlug,
 } from "./use-realtime-sync";
 
+const webPushState = vi.hoisted(() => ({ active: false }));
+vi.mock("../platform/web-push", () => ({
+  hasActiveWebPushSubscription: () => webPushState.active,
+}));
+
 const sessionId = "session-1";
 const taskId = "task-1";
 const messagesKey = chatKeys.messages(sessionId);
@@ -416,6 +421,7 @@ describe("handleInboxNew", () => {
 
   afterEach(() => {
     delete (globalThis as Record<string, unknown>).desktopAPI;
+    webPushState.active = false;
   });
 
   it("still shows the banner when the slug can't be resolved, with an empty slug so the click is a no-op", async () => {
@@ -584,6 +590,20 @@ describe("handleInboxNew", () => {
 
     expect(webBanners).toHaveLength(1);
     expect(webBanners[0]?.title).toBe("Mentioned you");
+  });
+
+  it("does not duplicate a banner when durable Web Push is active", async () => {
+    const qc = createQueryClient();
+    qc.setQueryData<Workspace[]>(workspaceKeys.list(), [workspace()]);
+    qc.setQueryData(notificationPreferenceKeys.all("ws-a"), {
+      preferences: { system_notifications: "all" },
+    });
+    installBrowserNotification("granted");
+    webPushState.active = true;
+
+    await handleInboxNew(qc, inboxItem());
+
+    expect(webBanners).toHaveLength(0);
   });
 
   it("shows no browser banner when the SOURCE workspace is muted", async () => {

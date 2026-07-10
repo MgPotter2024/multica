@@ -29,6 +29,8 @@ export interface CoreProviderProps {
   cookieAuth?: boolean;
   /** Called after successful login (e.g. set cookie for Next.js middleware). */
   onLogin?: () => void;
+  /** Called before authentication is cleared (e.g. remove user-scoped platform bindings). */
+  onBeforeLogout?: () => void;
   /** Called after logout (e.g. clear cookie). */
   onLogout?: () => void;
   /** Identifies the calling client (web/desktop + version + os) to the server. */

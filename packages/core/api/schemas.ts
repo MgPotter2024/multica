@@ -23,6 +23,7 @@ import type {
   Squad,
   TimelineEntry,
   User,
+  WebPushConfig,
   WebhookDelivery,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
@@ -204,6 +205,22 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   daemon_app_url: "",
   workspace_creation_disabled: false,
   feature_flags: {},
+};
+
+export const WebPushConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    public_key: z.string(),
+  })
+  .loose()
+  .transform(({ enabled, public_key }) => ({
+    enabled,
+    publicKey: public_key,
+  }));
+
+export const EMPTY_WEB_PUSH_CONFIG: WebPushConfig = {
+  enabled: false,
+  publicKey: "",
 };
 
 export const CreateFeedbackResponseSchema = z.object({

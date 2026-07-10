@@ -28,6 +28,7 @@ function initCore(
   apiBaseUrl: string,
   storage: StorageAdapter,
   onLogin?: () => void,
+  onBeforeLogout?: () => void,
   onLogout?: () => void,
   cookieAuth?: boolean,
   identity?: ClientIdentity,
@@ -54,7 +55,14 @@ function initCore(
   // client reads the slug from that singleton for the X-Workspace-Slug
   // header. No boot-time hydration from storage is required.
 
-  authStore = createAuthStore({ api, storage, onLogin, onLogout, cookieAuth });
+  authStore = createAuthStore({
+    api,
+    storage,
+    onLogin,
+    onBeforeLogout,
+    onLogout,
+    cookieAuth,
+  });
   registerAuthStore(authStore);
 
   chatStore = createChatStore({ storage });
@@ -70,6 +78,7 @@ export function CoreProvider({
   storage = defaultStorage,
   cookieAuth,
   onLogin,
+  onBeforeLogout,
   onLogout,
   identity,
   locale,
@@ -78,8 +87,21 @@ export function CoreProvider({
 }: CoreProviderProps) {
   // Initialize singletons on first render only. Dependencies are read-once:
   // apiBaseUrl, storage, and callbacks are set at app boot and never change at runtime.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useMemo(() => initCore(apiBaseUrl, storage, onLogin, onLogout, cookieAuth, identity), []);
+  /* eslint-disable react-hooks/exhaustive-deps -- app boot options are read once */
+  useMemo(
+    () =>
+      initCore(
+        apiBaseUrl,
+        storage,
+        onLogin,
+        onBeforeLogout,
+        onLogout,
+        cookieAuth,
+        identity,
+      ),
+    [],
+  );
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Client-only freeze watchdog — shared by web and desktop. No-op on the
   // server and idempotent, so mounting it here covers both apps in one place.

@@ -108,6 +108,8 @@ import type {
   WebhookDelivery,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  WebPushConfig,
+  WebPushSubscriptionInput,
   GitHubPullRequest,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
@@ -222,6 +224,8 @@ import {
   EMPTY_CREATE_FEEDBACK_RESPONSE,
   InboxUnreadSummarySchema,
   EMPTY_INBOX_UNREAD_SUMMARY,
+  EMPTY_WEB_PUSH_CONFIG,
+  WebPushConfigSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -1555,6 +1559,33 @@ export class ApiClient {
       method: "PUT",
       body: JSON.stringify({ preferences }),
     });
+  }
+
+  // Web Push
+  async getWebPushConfig(): Promise<WebPushConfig> {
+    const raw = await this.fetch<unknown>("/api/web-push/config");
+    return parseWithFallback(raw, WebPushConfigSchema, EMPTY_WEB_PUSH_CONFIG, {
+      endpoint: "GET /api/web-push/config",
+    });
+  }
+
+  async upsertWebPushSubscription(subscription: WebPushSubscriptionInput): Promise<void> {
+    await this.fetch<unknown>("/api/web-push/subscription", {
+      method: "PUT",
+      body: JSON.stringify(subscription),
+    });
+  }
+
+  async deleteWebPushSubscription(endpoint: string): Promise<void> {
+    await this.fetch<unknown>("/api/web-push/subscription", {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint }),
+      keepalive: true,
+    });
+  }
+
+  async testWebPushSubscription(): Promise<void> {
+    await this.fetch<unknown>("/api/web-push/test", { method: "POST" });
   }
 
   // App Config

@@ -21,6 +21,7 @@ import {
   SquadSchema,
   TimelineEntriesSchema,
   UserSchema,
+  WebPushConfigSchema,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 
@@ -536,6 +537,26 @@ describe("AppConfigSchema cdn_signed drift", () => {
   it("defaults malformed feature_flags to an empty object", () => {
     const parsed = AppConfigSchema.parse({ feature_flags: ["not", "an", "object"] });
     expect(parsed.feature_flags).toEqual({});
+  });
+});
+
+describe("WebPushConfigSchema", () => {
+  it("parses the wire shape into the camel-cased client contract", () => {
+    expect(
+      WebPushConfigSchema.parse({
+        enabled: true,
+        public_key: "vapid-public-key",
+      }),
+    ).toEqual({ enabled: true, publicKey: "vapid-public-key" });
+  });
+
+  it("rejects malformed config so callers can fall back safely", () => {
+    expect(
+      WebPushConfigSchema.safeParse({
+        enabled: "yes",
+        public_key: 123,
+      }).success,
+    ).toBe(false);
   });
 });
 

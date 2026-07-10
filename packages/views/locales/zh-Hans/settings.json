@@ -97,7 +97,17 @@
       "enable": "启用",
       "granted": "当前浏览器可以弹出通知横幅。",
       "denied": "已被浏览器拦截。请在浏览器设置中为本站点开启通知权限。",
-      "enabled_badge": "已启用"
+      "enabled_badge": "已启用",
+      "subscribed": "当前浏览器已开启后台通知。",
+      "fallback": "后台通知不可用。Multica 打开时仍可收到通知。",
+      "server_disabled": "此服务器尚未配置后台通知。Multica 打开时仍可收到通知。",
+      "unsupported": "当前浏览器不支持通知。",
+      "error": "无法确认后台通知是否正常。",
+      "retry": "重试",
+      "test": "发送测试通知",
+      "testing": "发送中...",
+      "test_success": "测试通知已发送",
+      "test_failed": "发送测试通知失败"
     }
   },
   "tokens": {

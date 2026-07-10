@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import {
+  reconcileWebPushSubscription,
   registerSystemNotificationClickHandler,
   type SystemNotificationPayload,
 } from "@multica/core/platform";
@@ -28,6 +29,10 @@ export function WebNotificationBridge() {
   useEffect(() => {
     pushRef.current = push;
   }, [push]);
+
+  useEffect(() => {
+    void reconcileWebPushSubscription();
+  }, []);
 
   useEffect(() => {
     registerSystemNotificationClickHandler(

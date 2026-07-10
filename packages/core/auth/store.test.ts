@@ -91,3 +91,23 @@ describe("authStore.initialize — token mode", () => {
     expect(storage.snapshot().multica_token).toBe("t");
   });
 });
+
+describe("authStore.logout", () => {
+  it("starts platform cleanup before clearing authentication", () => {
+    const calls: string[] = [];
+    const storage = makeStorage({ multica_token: "t" });
+    const api = {
+      setToken: vi.fn(() => calls.push("clear-token")),
+    } as unknown as ApiClient;
+    const store = createAuthStore({
+      api,
+      storage,
+      onBeforeLogout: () => calls.push("before-logout"),
+      onLogout: () => calls.push("after-logout"),
+    });
+
+    store.getState().logout();
+
+    expect(calls).toEqual(["before-logout", "clear-token", "after-logout"]);
+  });
+});

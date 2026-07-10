@@ -43,6 +43,7 @@ import {
   showWebNotification,
   type SystemNotificationPayload,
 } from "../platform/system-notification";
+import { hasActiveWebPushSubscription } from "../platform/web-push";
 import type { Workspace } from "../types/workspace";
 import { chatKeys, mergeTaskMessagesBySeq, sortChatSessions } from "../chat/queries";
 import { useChatStore } from "../chat";
@@ -322,6 +323,7 @@ export async function handleInboxNew(
     desktopAPI.showNotification(payload);
     return;
   }
+  if (hasActiveWebPushSubscription()) return;
   // Web: the browser Notification API. No-op without granted permission or on
   // SSR — the in-app inbox + unread badge still reflect the new item.
   showWebNotification(payload);

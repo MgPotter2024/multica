@@ -1,7 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
-import { CoreProvider } from "@multica/core/platform";
+import {
+  cleanupWebPushOnLogout,
+  CoreProvider,
+} from "@multica/core/platform";
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
 import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
 import { useWelcomeStore } from "@multica/core/onboarding";
@@ -66,6 +69,7 @@ export function WebProviders({
       wsUrl={deriveWsUrl()}
       cookieAuth={cookieAuth}
       onLogin={setLoggedInCookie}
+      onBeforeLogout={cleanupWebPushOnLogout}
       onLogout={() => {
         // welcome-store holds the transient post-onboarding signal. Must
         // clear on logout so user B logging into the same browser doesn't

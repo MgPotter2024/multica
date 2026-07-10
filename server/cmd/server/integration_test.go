@@ -423,7 +423,7 @@ func TestVerifyCodeNewUserHasNoWorkspace(t *testing.T) {
 }
 
 func TestProtectedRoutesRequireAuth(t *testing.T) {
-	paths := []string{"/api/me", "/api/issues", "/api/agents", "/api/inbox", "/api/workspaces"}
+	paths := []string{"/api/me", "/api/issues", "/api/agents", "/api/inbox", "/api/workspaces", "/api/web-push/config"}
 
 	for _, path := range paths {
 		resp, err := http.Get(testServer.URL + path)

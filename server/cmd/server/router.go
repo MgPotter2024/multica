@@ -36,6 +36,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	webpushinternal "github.com/multica-ai/multica/server/internal/webpush"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -131,6 +132,7 @@ type RouterOptions struct {
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
 	// tests leave this nil and get the legacy synchronous behavior.
 	HeartbeatScheduler handler.HeartbeatScheduler
+	WebPushDispatcher  *webpushinternal.Dispatcher
 }
 
 // NewRouterWithOptions builds the fully-configured Chi router and
@@ -180,6 +182,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		LLMDefaultModel:          strings.TrimSpace(os.Getenv("MULTICA_LLM_DEFAULT_MODEL")),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	pushDispatcher := opts.WebPushDispatcher
+	if pushDispatcher == nil {
+		pushConfig, err := webpushinternal.ConfigFromEnv()
+		if err != nil {
+			slog.Warn("web push disabled because VAPID configuration is invalid", "error", err)
+		}
+		pushDispatcher = webpushinternal.NewDispatcher(queries, pushConfig)
+	}
+	h.WebPush = pushDispatcher
+	pushDispatcher.Register(bus)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
@@ -779,6 +791,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/cli-token", h.IssueCliToken)
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
+		r.Route("/api/web-push", func(r chi.Router) {
+			r.Get("/config", h.GetWebPushConfig)
+			r.Put("/subscription", h.PutWebPushSubscription)
+			r.Delete("/subscription", h.DeleteWebPushSubscription)
+			r.Post("/test", h.SendWebPushTest)
+		})
 
 		// Note (MUL-4309): the generic OpenAI-compatible passthrough endpoints
 		// (POST /api/llm/v1/chat/completions[/stream]) were intentionally

@@ -190,6 +190,18 @@ describe("ApiClient schema fallback", () => {
     });
   });
 
+  describe("getWebPushConfig", () => {
+    it("falls back to a disabled config when the response is malformed", async () => {
+      stubFetchJson({ enabled: "yes", public_key: 123 });
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(client.getWebPushConfig()).resolves.toEqual({
+        enabled: false,
+        publicKey: "",
+      });
+    });
+  });
+
   describe("listGroupedIssues", () => {
     it("falls back to empty groups when the response is malformed", async () => {
       stubFetchJson({ groups: "not-an-array" });

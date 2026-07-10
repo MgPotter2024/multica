@@ -129,6 +129,41 @@ multica daemon status
 
 > **Alternative:** If you prefer manual steps, see [Manual CLI Configuration](#manual-cli-configuration) below.
 
+### Browser Notifications (Optional)
+
+Durable browser notifications use standards-based Web Push and continue working after every Multica tab is closed. Production browsers require the web app to be served over HTTPS; plain HTTP is supported only on `localhost` for development.
+
+Generate one VAPID key pair on a trusted administrator machine:
+
+```bash
+npx --yes web-push generate-vapid-keys
+```
+
+Add the generated values and an operator contact to the untracked `.env` file:
+
+```bash
+VAPID_PUBLIC_KEY=<public-key>
+VAPID_PRIVATE_KEY=<private-key>
+VAPID_SUBJECT=mailto:ops@example.com
+```
+
+Treat `VAPID_PRIVATE_KEY` as a production secret: keep it in the VPS secret store or untracked `.env`, never commit it, and never capture it in tickets, chat, shared shell transcripts, or build logs. Restart only the backend after changing these values:
+
+```bash
+docker compose -f docker-compose.selfhost.yml up -d --force-recreate backend
+```
+
+For a release deployment, pin `MULTICA_IMAGE_TAG` to the reviewed immutable release tag instead of `latest`, and use that same tag for both backend and frontend images.
+
+Verify the complete path from an HTTPS browser:
+
+1. Open **Settings → Notifications**, enable browser notifications, and send a test. The test banner is intentionally visible while the Settings tab is focused.
+2. Close every Multica tab, then create an inbox event from another user or agent. A native browser notification should appear without an open page.
+3. Click the notification and confirm it opens the source workspace inbox with the source issue selected.
+4. Set `system_notifications` to muted for that workspace, repeat the event, and confirm no native notification is sent.
+
+If the test reports that Web Push is unavailable, confirm all three VAPID variables reached the backend container and that the browser is using HTTPS with notification permission granted. Do not print the private key while troubleshooting.
+
 ### Step 4 — Verify & Start Using
 
 1. Open your workspace in the web app at http://localhost:3000

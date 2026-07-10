@@ -97,7 +97,17 @@
       "enable": "Enable",
       "granted": "This browser can show notification banners.",
       "denied": "Blocked by your browser. Enable notifications for this site in your browser settings.",
-      "enabled_badge": "Enabled"
+      "enabled_badge": "Enabled",
+      "subscribed": "Background notifications are active in this browser.",
+      "fallback": "Background delivery is unavailable. Notifications still work while Multica is open.",
+      "server_disabled": "Background notifications are not configured on this server. Open-tab notifications remain available.",
+      "unsupported": "This browser does not support notifications.",
+      "error": "Could not confirm background notification delivery.",
+      "retry": "Retry",
+      "test": "Send test",
+      "testing": "Sending...",
+      "test_success": "Test notification sent",
+      "test_failed": "Failed to send test notification"
     }
   },
   "tokens": {

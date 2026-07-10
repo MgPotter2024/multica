@@ -8,6 +8,7 @@ export interface AuthStoreOptions {
   api: ApiClient;
   storage: StorageAdapter;
   onLogin?: () => void;
+  onBeforeLogout?: () => void;
   onLogout?: () => void;
   /** When true, rely on HttpOnly cookies instead of localStorage for auth tokens. */
   cookieAuth?: boolean;
@@ -28,7 +29,7 @@ export interface AuthState {
 }
 
 export function createAuthStore(options: AuthStoreOptions) {
-  const { api, storage, onLogin, onLogout, cookieAuth } = options;
+  const { api, storage, onLogin, onBeforeLogout, onLogout, cookieAuth } = options;
 
   return create<AuthState>((set) => ({
     user: null,
@@ -114,6 +115,7 @@ export function createAuthStore(options: AuthStoreOptions) {
     },
 
     logout: () => {
+      onBeforeLogout?.();
       if (cookieAuth) {
         // Clear server-side HttpOnly cookie.
         api.logout().catch(() => {});
