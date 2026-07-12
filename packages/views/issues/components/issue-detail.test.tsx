@@ -10,6 +10,11 @@ import enIssues from "../../locales/en/issues.json";
 const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
 
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
+const openExternalMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../platform/open-external", () => ({
+  openExternal: openExternalMock,
+}));
 
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => mockViewport.isMobile,
@@ -702,6 +707,40 @@ describe("IssueDetail (shared)", () => {
     // Key names are not rendered in the sidebar prior to opening the dialog.
     expect(screen.queryByText("pr_url")).not.toBeInTheDocument();
     expect(screen.queryByText("pipeline_status")).not.toBeInTheDocument();
+  });
+
+  it("opens a trusted originating Twenty Work Request", async () => {
+    const twentyURL =
+      "https://crm.aiparis.org/object/workRequest/1d760d12-a3e4-4f52-b34f-47d66be9bb76";
+    mockApiObj.getIssue.mockResolvedValue({
+      ...mockIssue,
+      metadata: { argos_twenty_record_url: twentyURL },
+    });
+
+    renderIssueDetail();
+
+    const button = await screen.findByRole("button", { name: "Open in Twenty" });
+    fireEvent.click(button);
+
+    expect(openExternalMock).toHaveBeenCalledTimes(1);
+    expect(openExternalMock).toHaveBeenCalledWith(twentyURL);
+  });
+
+  it("hides the Twenty action for an untrusted metadata URL", async () => {
+    mockApiObj.getIssue.mockResolvedValue({
+      ...mockIssue,
+      metadata: {
+        argos_twenty_record_url:
+          "https://crm.aiparis.org.attacker.test/object/workRequest/request-1",
+      },
+    });
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Metadata\b/ })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "Open in Twenty" })).not.toBeInTheDocument();
   });
 
   it("opens a dialog with formatted JSON when the Metadata button is clicked", async () => {

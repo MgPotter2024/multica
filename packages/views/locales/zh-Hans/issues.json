@@ -167,6 +167,7 @@
     "add_sub_issues": "添加子 issue",
     "add_sub_issue_tooltip": "添加子 issue",
     "add_sub_issue_aria": "添加子 issue",
+    "open_in_twenty": "在 Twenty 中打开",
     "section_properties": "属性",
     "section_parent_issue": "父 issue",
     "section_pull_requests": "Pull Request",
