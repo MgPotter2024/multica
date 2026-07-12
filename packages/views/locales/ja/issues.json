@@ -167,6 +167,7 @@
     "add_sub_issues": "サブイシューを追加",
     "add_sub_issue_tooltip": "サブイシューを追加",
     "add_sub_issue_aria": "サブイシューを追加",
+    "open_in_twenty": "Twenty で開く",
     "section_properties": "プロパティ",
     "section_parent_issue": "親イシュー",
     "section_pull_requests": "Pull requests",

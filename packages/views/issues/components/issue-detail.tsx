@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  ExternalLink,
   Milestone,
   MoreHorizontal,
   PanelRight,
@@ -92,6 +93,8 @@ import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useInPageFind } from "../hooks/use-in-page-find";
 import { FindBar } from "./find-bar";
+import { readTwentyWorkRequestURL } from "../utils/twenty-work-request-url";
+import { openExternal } from "../../platform/open-external";
 import {
   AnimatedRightSidebar,
   getAnimatedRightSidebarInitialOpen,
@@ -1421,8 +1424,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     );
   }
 
+  const twentyWorkRequestURL = readTwentyWorkRequestURL(issue.metadata);
+
   const sidebarContent = (
     <div className="space-y-5">
+      {twentyWorkRequestURL && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-full justify-start"
+          onClick={() => openExternal(twentyWorkRequestURL)}
+        >
+          <ExternalLink className="size-3.5" />
+          <span className="truncate">{t(($) => $.detail.open_in_twenty)}</span>
+        </Button>
+      )}
+
       {/* Properties */}
       <div>
         <button
