@@ -403,6 +403,10 @@ func notifyDirect(
 	body string,
 	details []byte,
 ) bool {
+	if !isMemberOrAgent(recipientType) {
+		return false
+	}
+
 	// Skip if recipient is the actor
 	if recipientID == e.ActorID {
 		return false

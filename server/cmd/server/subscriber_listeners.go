@@ -178,6 +178,10 @@ func addMentionedSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, i
 // addSubscriber adds a user as an issue subscriber and publishes a
 // subscriber:added event for real-time frontend sync.
 func addSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID, userType, userID, reason string) {
+	if !isMemberOrAgent(userType) {
+		return
+	}
+
 	issueUUID, err := util.ParseUUID(issueID)
 	if err != nil {
 		slog.Error("failed to parse issue subscriber issue ID", "issue_id", issueID, "error", err)
@@ -215,4 +219,8 @@ func addSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID, u
 			"reason":    reason,
 		},
 	})
+}
+
+func isMemberOrAgent(userType string) bool {
+	return userType == "member" || userType == "agent"
 }
