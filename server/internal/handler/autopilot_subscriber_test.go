@@ -529,6 +529,82 @@ func TestAutopilotDispatchNotifiesSubscribersOnCreate(t *testing.T) {
 	}
 }
 
+func TestAutopilotDispatchMentionsOnlySuppressesSubscriberInbox(t *testing.T) {
+	ctx := context.Background()
+	setHandlerNotificationPreferences(t, map[string]string{"inbox_mode": "mentions_only"})
+
+	title := fmt.Sprintf("Autopilot mentions-only subscriber %d", time.Now().UnixNano())
+	var autopilotID, issueID string
+	defer func() {
+		if issueID != "" {
+			testPool.Exec(ctx, `DELETE FROM inbox_item WHERE issue_id = $1`, issueID)
+			testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+		}
+		if autopilotID != "" {
+			testPool.Exec(ctx, `DELETE FROM autopilot WHERE id = $1`, autopilotID)
+		}
+	}()
+
+	var agentID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID); err != nil {
+		t.Fatalf("load test agent: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
+		"title":                "Mentions-only subscriber autopilot",
+		"assignee_id":          agentID,
+		"execution_mode":       "create_issue",
+		"issue_title_template": title,
+		"subscribers": []map[string]any{
+			{"user_type": "member", "user_id": testUserID},
+		},
+	})
+	testHandler.CreateAutopilot(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var autopilot AutopilotResponse
+	if err := json.NewDecoder(w.Body).Decode(&autopilot); err != nil {
+		t.Fatalf("decode autopilot: %v", err)
+	}
+	autopilotID = autopilot.ID
+
+	queries := db.New(testPool)
+	ap, err := queries.GetAutopilot(ctx, parseUUID(autopilotID))
+	if err != nil {
+		t.Fatalf("GetAutopilot: %v", err)
+	}
+	run, err := testHandler.AutopilotService.DispatchAutopilot(ctx, ap, pgtype.UUID{}, "manual", nil)
+	if err != nil {
+		t.Fatalf("DispatchAutopilot: %v", err)
+	}
+	if run == nil || !run.IssueID.Valid {
+		t.Fatalf("dispatch run = %+v, want linked issue", run)
+	}
+	issueID = uuidToString(run.IssueID)
+
+	var subscriberCount, inboxCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM issue_subscriber
+		WHERE issue_id = $1 AND user_type = 'member' AND user_id = $2
+	`, issueID, testUserID).Scan(&subscriberCount); err != nil {
+		t.Fatalf("count issue subscribers: %v", err)
+	}
+	if subscriberCount != 1 {
+		t.Fatalf("mentions-only must preserve the subscription, got %d rows", subscriberCount)
+	}
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM inbox_item
+		WHERE issue_id = $1 AND recipient_id = $2 AND type = 'issue_subscribed'
+	`, issueID, testUserID).Scan(&inboxCount); err != nil {
+		t.Fatalf("count subscriber inbox rows: %v", err)
+	}
+	if inboxCount != 0 {
+		t.Fatalf("mentions-only must suppress issue_subscribed persistence, got %d rows", inboxCount)
+	}
+}
+
 // TestAutopilotDispatchSkipsInboxWhenNoSubscribers asserts the no-op path:
 // an autopilot with an empty subscriber template must NOT create any inbox
 // rows on dispatch — otherwise we'd be paging the workspace on every quiet

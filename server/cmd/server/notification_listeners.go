@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/inboxpolicy"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -18,7 +19,6 @@ type mention struct {
 	Type string // "member", "agent", "issue", or "all"
 	ID   string // user_id, agent_id, issue_id, or "all"
 }
-
 
 // statusLabels maps DB status values to human-readable labels for notifications.
 var statusLabels = map[string]string{
@@ -75,44 +75,39 @@ var parentBubbleNotifTypes = map[string]bool{
 	"status_changed": true,
 }
 
-// notifTypeToGroup maps each InboxItemType to a user-configurable preference
-// group. Types not in this map are always delivered (not configurable).
-var notifTypeToGroup = map[string]string{
-	"issue_assigned":  "assignments",
-	"unassigned":      "assignments",
-	"assignee_changed": "assignments",
-	"status_changed":  "status_changes",
-	"new_comment":     "comments",
-	"mentioned":       "comments",
-	"priority_changed": "updates",
-	"start_date_changed": "updates",
-	"due_date_changed": "updates",
-	"task_completed":  "agent_activity",
-	"task_failed":     "agent_activity",
-	"agent_blocked":   "agent_activity",
-	"agent_completed": "agent_activity",
+func directMemberMentionIDs(mentions []mention) map[string]bool {
+	ids := map[string]bool{}
+	for _, m := range mentions {
+		if m.Type == "member" {
+			memberID, err := util.ParseUUID(m.ID)
+			if err != nil {
+				continue
+			}
+			ids[util.UUIDToString(memberID)] = true
+		}
+	}
+	return ids
 }
 
-// isNotifMuted returns true if the given notification type is muted for a user
-// based on their parsed preferences map.
-func isNotifMuted(prefs map[string]string, notifType string) bool {
-	group, ok := notifTypeToGroup[notifType]
-	if !ok {
-		return false // unconfigurable types are always delivered
-	}
-	return prefs[group] == "muted"
+type notificationPreferenceBatchReader interface {
+	ListNotificationPreferencesByUsers(
+		context.Context,
+		db.ListNotificationPreferencesByUsersParams,
+	) ([]db.NotificationPreference, error)
 }
 
 // loadUserPrefs loads notification preferences for a set of user IDs in a
-// workspace. Returns a map from user_id string to parsed preferences.
+// workspace. The second return value marks recipients whose preferences could
+// not be established; callers must fail closed for those recipients. A user
+// absent from both maps has no preference row and keeps default delivery.
 func loadUserPrefs(
 	ctx context.Context,
-	queries *db.Queries,
+	queries notificationPreferenceBatchReader,
 	workspaceID string,
 	userIDs []string,
-) map[string]map[string]string {
+) (map[string]map[string]string, map[string]bool) {
 	if len(userIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	uuids := make([]pgtype.UUID, len(userIDs))
@@ -126,18 +121,26 @@ func loadUserPrefs(
 	})
 	if err != nil {
 		slog.Error("failed to load notification preferences", "error", err)
-		return nil
+		unavailable := make(map[string]bool, len(userIDs))
+		for _, id := range userIDs {
+			unavailable[id] = true
+		}
+		return nil, unavailable
 	}
 
 	result := make(map[string]map[string]string, len(rows))
+	unavailable := map[string]bool{}
 	for _, row := range rows {
+		userID := util.UUIDToString(row.UserID)
 		var prefs map[string]string
 		if err := json.Unmarshal(row.Preferences, &prefs); err != nil {
+			slog.Error("failed to decode notification preferences", "user_id", userID, "error", err)
+			unavailable[userID] = true
 			continue
 		}
-		result[util.UUIDToString(row.UserID)] = prefs
+		result[userID] = prefs
 	}
-	return result
+	return result, unavailable
 }
 
 // terminalStatusForTaskFailedDismiss is the set of issue statuses that mark
@@ -296,15 +299,28 @@ func notifyIssueSubscribers(
 			"issue_id", subscriberIssueID, "error", err)
 		return notified
 	}
+	workspaceMembers, err := queries.ListMembers(ctx, parseUUID(workspaceID))
+	if err != nil {
+		slog.Error("failed to validate notification subscribers",
+			"workspace_id", workspaceID, "error", err)
+		return notified
+	}
+	activeMemberIDs := make(map[string]bool, len(workspaceMembers))
+	for _, member := range workspaceMembers {
+		activeMemberIDs[util.UUIDToString(member.UserID)] = true
+	}
 
 	// Batch-load notification preferences for all member subscribers.
 	var memberIDs []string
 	for _, sub := range subs {
 		if sub.UserType == "member" {
-			memberIDs = append(memberIDs, util.UUIDToString(sub.UserID))
+			memberID := util.UUIDToString(sub.UserID)
+			if activeMemberIDs[memberID] {
+				memberIDs = append(memberIDs, memberID)
+			}
 		}
 	}
-	userPrefs := loadUserPrefs(ctx, queries, workspaceID, memberIDs)
+	userPrefs, unavailablePrefs := loadUserPrefs(ctx, queries, workspaceID, memberIDs)
 
 	for _, sub := range subs {
 		// Only notify member-type subscribers (not agents)
@@ -313,6 +329,9 @@ func notifyIssueSubscribers(
 		}
 
 		subID := util.UUIDToString(sub.UserID)
+		if !activeMemberIDs[subID] {
+			continue
+		}
 
 		// Skip the actor
 		if subID == e.ActorID {
@@ -323,9 +342,12 @@ func notifyIssueSubscribers(
 		if exclude[subID] {
 			continue
 		}
+		if unavailablePrefs[subID] {
+			continue
+		}
 
-		// Skip if this notification type is muted by the user
-		if prefs, ok := userPrefs[subID]; ok && isNotifMuted(prefs, notifType) {
+		// Apply recipient preferences before persistence.
+		if inboxpolicy.ShouldSuppress(userPrefs[subID], notifType, false) {
 			continue
 		}
 
@@ -380,17 +402,31 @@ func notifyDirect(
 	title string,
 	body string,
 	details []byte,
-) {
+) bool {
 	// Skip if recipient is the actor
 	if recipientID == e.ActorID {
-		return
+		return false
 	}
 
 	// Check notification preferences for member recipients.
 	if recipientType == "member" {
-		prefs := loadUserPrefs(ctx, queries, workspaceID, []string{recipientID})
-		if p, ok := prefs[recipientID]; ok && isNotifMuted(p, notifType) {
-			return
+		active, err := inboxpolicy.IsActiveMember(
+			ctx, queries, parseUUID(workspaceID), parseUUID(recipientID),
+		)
+		if err != nil {
+			slog.Error("failed to validate direct notification recipient",
+				"workspace_id", workspaceID, "recipient_id", recipientID, "error", err)
+			return false
+		}
+		if !active {
+			return false
+		}
+		prefs, unavailablePrefs := loadUserPrefs(ctx, queries, workspaceID, []string{recipientID})
+		if unavailablePrefs[recipientID] {
+			return false
+		}
+		if inboxpolicy.ShouldSuppress(prefs[recipientID], notifType, false) {
+			return false
 		}
 	}
 
@@ -410,7 +446,7 @@ func notifyDirect(
 	if err != nil {
 		slog.Error("direct notification creation failed",
 			"recipient_id", recipientID, "type", notifType, "error", err)
-		return
+		return false
 	}
 
 	resp := inboxItemToResponse(item)
@@ -422,6 +458,7 @@ func notifyDirect(
 		ActorID:     e.ActorID,
 		Payload:     map[string]any{"item": resp},
 	})
+	return true
 }
 
 // notifyMentionedMembers creates inbox items for each @mentioned member,
@@ -440,7 +477,20 @@ func notifyMentionedMembers(
 	details []byte,
 ) {
 	// Collect the set of member IDs to notify.
-	recipientIDs := map[string]bool{}
+	directRecipientIDs := directMemberMentionIDs(mentions)
+	recipientIDs := make(map[string]bool, len(directRecipientIDs))
+	for id := range directRecipientIDs {
+		recipientIDs[id] = true
+	}
+	workspaceMembers, err := queries.ListMembers(context.Background(), parseUUID(e.WorkspaceID))
+	if err != nil {
+		slog.Error("failed to validate mention recipients", "workspace_id", e.WorkspaceID, "error", err)
+		return
+	}
+	workspaceMemberIDs := make(map[string]bool, len(workspaceMembers))
+	for _, member := range workspaceMembers {
+		workspaceMemberIDs[util.UUIDToString(member.UserID)] = true
+	}
 
 	hasAll := false
 	var squadIDs []string
@@ -448,9 +498,6 @@ func notifyMentionedMembers(
 		if m.Type == "all" {
 			hasAll = true
 			continue
-		}
-		if m.Type == "member" {
-			recipientIDs[m.ID] = true
 		}
 		if m.Type == "squad" {
 			squadIDs = append(squadIDs, m.ID)
@@ -479,31 +526,41 @@ func notifyMentionedMembers(
 
 	// If @all is present, expand to all workspace members.
 	if hasAll {
-		members, err := queries.ListMembers(context.Background(), parseUUID(e.WorkspaceID))
-		if err != nil {
-			slog.Error("failed to list members for @all mention", "workspace_id", e.WorkspaceID, "error", err)
-		} else {
-			for _, m := range members {
-				recipientIDs[util.UUIDToString(m.UserID)] = true
-			}
+		for id := range workspaceMemberIDs {
+			recipientIDs[id] = true
+		}
+	}
+	for id := range recipientIDs {
+		if !workspaceMemberIDs[id] {
+			delete(recipientIDs, id)
 		}
 	}
 
-	// Batch-load notification preferences for all mention recipients.
+	// Batch-load notification preferences for all mention recipients. Direct
+	// recipients that are in the skip set still need preferences loaded: when
+	// an assignment notification was suppressed by mentions-only mode, its
+	// direct mention must survive the normal assignment deduplication skip.
 	var mentionUserIDs []string
 	for id := range recipientIDs {
-		if id != e.ActorID && !skip[id] {
+		if id != e.ActorID {
 			mentionUserIDs = append(mentionUserIDs, id)
 		}
 	}
-	mentionPrefs := loadUserPrefs(context.Background(), queries, e.WorkspaceID, mentionUserIDs)
+	mentionPrefs, unavailablePrefs := loadUserPrefs(context.Background(), queries, e.WorkspaceID, mentionUserIDs)
 
 	for id := range recipientIDs {
-		if id == e.ActorID || skip[id] {
+		if id == e.ActorID {
 			continue
 		}
-		// Skip if mentions/comments are muted by this user
-		if p, ok := mentionPrefs[id]; ok && isNotifMuted(p, "mentioned") {
+		if unavailablePrefs[id] {
+			continue
+		}
+		prefs := mentionPrefs[id]
+		directMention := directRecipientIDs[id]
+		if skip[id] {
+			continue
+		}
+		if inboxpolicy.ShouldSuppress(prefs, "mentioned", directMention) {
 			continue
 		}
 		item, err := queries.CreateInboxItem(context.Background(), db.CreateInboxItemParams{
@@ -560,15 +617,16 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 
 		// Direct notification to assignee
 		if issue.AssigneeType != nil && issue.AssigneeID != nil {
-			skip[*issue.AssigneeID] = true
-			notifyDirect(ctx, queries, bus,
+			if notifyDirect(ctx, queries, bus,
 				*issue.AssigneeType, *issue.AssigneeID,
 				issue.WorkspaceID, e, issue.ID, issue.Status,
 				"issue_assigned", "action_required",
 				issue.Title,
 				"",
 				emptyDetails,
-			)
+			) {
+				skip[*issue.AssigneeID] = true
+			}
 		}
 
 		// Notify @mentions in description
@@ -793,13 +851,16 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 			})
 		}
 
+		// A direct member mention is the stronger signal. Exclude those members
+		// from the generic subscriber path so one comment produces exactly one
+		// mentioned row and one inbox:new event for them.
+		mentions := parseMentions(commentContent)
 		notifySubscribers(ctx, queries, bus, issueID, issueStatus, e.WorkspaceID, e,
-			nil, "new_comment", "info",
+			directMemberMentionIDs(mentions), "new_comment", "info",
 			issueTitle, commentContent,
 			commentDetails)
 
 		// Notify @mentions in comment content.
-		mentions := parseMentions(commentContent)
 		if len(mentions) > 0 {
 			skip := map[string]bool{e.ActorID: true}
 			notifyMentionedMembers(bus, queries, e, mentions, issueID, issueTitle, issueStatus,

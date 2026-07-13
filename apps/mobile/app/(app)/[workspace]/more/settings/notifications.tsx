@@ -1,6 +1,6 @@
 /**
- * Notification preferences subscreen. 5 inbox groups + system_notifications
- * toggle, each backed by an optimistic PUT /api/notification-preferences.
+ * Notification preferences subscreen. Mentions-only mode, 5 inbox groups,
+ * and system_notifications are backed by an optimistic PUT.
  *
  * Copy mirrors packages/views/settings/components/notifications-tab.tsx but
  * hardcoded English (mobile has no i18n infra yet). The group labels MUST
@@ -72,6 +72,17 @@ export default function NotificationsSettingsScreen() {
     mutation.mutate(next);
   };
 
+  const onMentionsOnlyToggle = (enabled: boolean) => {
+    const next: NotificationPreferences = { ...preferences };
+    if (enabled) {
+      next.inbox_mode = "mentions_only";
+    } else {
+      delete next.inbox_mode;
+    }
+    mutation.mutate(next);
+  };
+
+  const mentionsOnly = preferences.inbox_mode === "mentions_only";
   const systemEnabled = preferences.system_notifications !== "muted";
 
   if (isLoading) {
@@ -101,6 +112,25 @@ export default function NotificationsSettingsScreen() {
         title="Inbox notifications"
         description="Which events show up in your inbox."
       >
+        <View>
+          <View className="flex-row items-center px-4 py-3 gap-3">
+            <View className="flex-1">
+              <Text className="text-base font-medium text-foreground">
+                Only direct @mentions
+              </Text>
+              <Text className="text-xs text-muted-foreground mt-0.5">
+                Keep other activity in the issue without adding it to your inbox.
+              </Text>
+            </View>
+            <Switch
+              accessibilityLabel="Only direct @mentions"
+              checked={mentionsOnly}
+              disabled={mutation.isPending}
+              onCheckedChange={onMentionsOnlyToggle}
+            />
+          </View>
+          <Separator />
+        </View>
         {INBOX_GROUPS.map((group, idx) => {
           const enabled = preferences[group.key] !== "muted";
           const isLast = idx === INBOX_GROUPS.length - 1;
@@ -116,7 +146,9 @@ export default function NotificationsSettingsScreen() {
                   </Text>
                 </View>
                 <Switch
+                  accessibilityLabel={group.label}
                   checked={enabled}
+                  disabled={mentionsOnly || mutation.isPending}
                   onCheckedChange={(checked) => onToggle(group.key, checked)}
                 />
               </View>
@@ -127,20 +159,22 @@ export default function NotificationsSettingsScreen() {
       </Section>
 
       <Section
-        title="System"
-        description="Multica-wide announcements and important account events."
+        title="System notifications"
+        description="Control native OS notification banners when Multica is in the background."
       >
         <View className="flex-row items-center px-4 py-3 gap-3">
           <View className="flex-1">
             <Text className="text-base font-medium text-foreground">
-              System notifications
+              Show system notifications
             </Text>
             <Text className="text-xs text-muted-foreground mt-0.5">
-              Account changes, security alerts, product updates.
+              Show an operating system banner for new inbox items when the app isn't focused.
             </Text>
           </View>
           <Switch
+            accessibilityLabel="Show system notifications"
             checked={systemEnabled}
+            disabled={mutation.isPending}
             onCheckedChange={(checked) =>
               onToggle("system_notifications", checked)
             }

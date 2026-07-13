@@ -13,6 +13,7 @@ import {
   InboxUnreadSummarySchema,
   IssueTriggerPreviewSchema,
   ListIssuesResponseSchema,
+  NotificationPreferenceResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
@@ -555,6 +556,35 @@ describe("WebPushConfigSchema", () => {
       WebPushConfigSchema.safeParse({
         enabled: "yes",
         public_key: 123,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("NotificationPreferenceResponseSchema", () => {
+  it("accepts mentions-only mode and future string preferences", () => {
+    expect(
+      NotificationPreferenceResponseSchema.parse({
+        workspace_id: "workspace-1",
+        preferences: {
+          inbox_mode: "mentions_only",
+          future_delivery_mode: "digest",
+        },
+      }),
+    ).toMatchObject({
+      workspace_id: "workspace-1",
+      preferences: {
+        inbox_mode: "mentions_only",
+        future_delivery_mode: "digest",
+      },
+    });
+  });
+
+  it("rejects malformed preference values", () => {
+    expect(
+      NotificationPreferenceResponseSchema.safeParse({
+        workspace_id: "workspace-1",
+        preferences: { inbox_mode: true },
       }).success,
     ).toBe(false);
   });

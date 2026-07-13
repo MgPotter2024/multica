@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
@@ -74,6 +77,604 @@ func newNotificationBus(t *testing.T, queries *db.Queries) *events.Bus {
 	registerSubscriberListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 	return bus
+}
+
+func setTestNotificationPreferences(t *testing.T, queries *db.Queries, userID string, preferences map[string]string) {
+	t.Helper()
+
+	prefsJSON, err := json.Marshal(preferences)
+	if err != nil {
+		t.Fatalf("marshal notification preferences: %v", err)
+	}
+	if _, err := queries.UpsertNotificationPreference(context.Background(), db.UpsertNotificationPreferenceParams{
+		WorkspaceID: util.MustParseUUID(testWorkspaceID),
+		UserID:      util.MustParseUUID(userID),
+		Preferences: prefsJSON,
+	}); err != nil {
+		t.Fatalf("upsert notification preferences: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `
+			DELETE FROM notification_preference
+			WHERE workspace_id = $1 AND user_id = $2
+		`, testWorkspaceID, userID)
+	})
+}
+
+func createNotificationTestSquad(t *testing.T, memberID string) string {
+	t.Helper()
+
+	var leaderID string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1
+	`, testWorkspaceID).Scan(&leaderID); err != nil {
+		t.Fatalf("load squad leader: %v", err)
+	}
+
+	var squadID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
+		VALUES ($1, 'Notification Mentions Only Squad', '', $2, $3)
+		RETURNING id
+	`, testWorkspaceID, leaderID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("create notification test squad: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO squad_member (squad_id, member_type, member_id)
+		VALUES ($1, 'member', $2)
+	`, squadID, memberID); err != nil {
+		t.Fatalf("add notification test squad member: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
+	})
+	return squadID
+}
+
+func publishNotificationTestComment(bus *events.Bus, issueID, actorID, content string) {
+	bus.Publish(events.Event{
+		Type:        protocol.EventCommentCreated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     actorID,
+		Payload: map[string]any{
+			"comment": handler.CommentResponse{
+				ID:         "00000000-0000-0000-0000-000000000000",
+				IssueID:    issueID,
+				AuthorType: "member",
+				AuthorID:   actorID,
+				Content:    content,
+				Type:       "comment",
+			},
+			"issue_title":  "mentions-only notification test",
+			"issue_status": "todo",
+		},
+	})
+}
+
+type notificationPreferenceBatchStub struct {
+	rows []db.NotificationPreference
+	err  error
+}
+
+func (s notificationPreferenceBatchStub) ListNotificationPreferencesByUsers(
+	context.Context,
+	db.ListNotificationPreferencesByUsersParams,
+) ([]db.NotificationPreference, error) {
+	return s.rows, s.err
+}
+
+func TestLoadUserPrefsFailsClosed(t *testing.T) {
+	workspaceID := "00000000-0000-4000-8000-000000000001"
+	userID := "00000000-0000-4000-8000-000000000002"
+
+	t.Run("query error marks every requested user unavailable", func(t *testing.T) {
+		prefs, unavailable := loadUserPrefs(
+			context.Background(),
+			notificationPreferenceBatchStub{err: errors.New("read failed")},
+			workspaceID,
+			[]string{userID},
+		)
+		if len(prefs) != 0 || !unavailable[userID] {
+			t.Fatalf("query failure must fail closed, prefs=%v unavailable=%v", prefs, unavailable)
+		}
+	})
+
+	t.Run("decode error marks only the affected user unavailable", func(t *testing.T) {
+		prefs, unavailable := loadUserPrefs(
+			context.Background(),
+			notificationPreferenceBatchStub{rows: []db.NotificationPreference{{
+				UserID:      util.MustParseUUID(userID),
+				Preferences: []byte(`[]`),
+			}}},
+			workspaceID,
+			[]string{userID},
+		)
+		if len(prefs) != 0 || !unavailable[userID] {
+			t.Fatalf("decode failure must fail closed, prefs=%v unavailable=%v", prefs, unavailable)
+		}
+	})
+
+	t.Run("absent row retains default delivery", func(t *testing.T) {
+		prefs, unavailable := loadUserPrefs(
+			context.Background(),
+			notificationPreferenceBatchStub{},
+			workspaceID,
+			[]string{userID},
+		)
+		if len(prefs) != 0 || unavailable[userID] {
+			t.Fatalf("missing row must keep defaults, prefs=%v unavailable=%v", prefs, unavailable)
+		}
+	})
+}
+
+func TestNotification_MentionsOnlySuppressesNonMentionBeforePersistence(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	recipientEmail := "notif-mentions-only-suppressed@multica.ai"
+	recipientID := createTestUser(t, recipientEmail)
+	t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+	setTestNotificationPreferences(t, queries, recipientID, map[string]string{"inbox_mode": "mentions_only"})
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	addTestSubscriber(t, issueID, "member", recipientID, "manual")
+
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO inbox_item (
+			workspace_id, recipient_type, recipient_id, type, severity,
+			issue_id, title, details
+		) VALUES ($1, 'member', $2, 'status_changed', 'info', $3, 'historical row', '{}')
+	`, testWorkspaceID, recipientID, issueID); err != nil {
+		t.Fatalf("seed historical inbox row: %v", err)
+	}
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+
+	publishNotificationTestComment(bus, issueID, testUserID, "routine agent progress")
+
+	items := inboxItemsForRecipient(t, queries, recipientID)
+	if len(items) != 1 || items[0].Title != "historical row" {
+		t.Fatalf("mentions-only must preserve the historical row and add nothing, got %+v", items)
+	}
+	if len(inboxEvents) != 0 {
+		t.Fatalf("suppressed inbox rows must not publish inbox:new, got %d events", len(inboxEvents))
+	}
+}
+
+func TestNotification_DirectMemberMentionCreatesOneInboxRow(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		preferences map[string]string
+		uppercaseID bool
+	}{
+		{name: "absent mode"},
+		{name: "all mode", preferences: map[string]string{"inbox_mode": "all"}},
+		{name: "mentions-only mode", preferences: map[string]string{"inbox_mode": "mentions_only"}},
+		{
+			name: "mentions-only overrides legacy comments mute",
+			preferences: map[string]string{
+				"inbox_mode": "mentions_only",
+				"comments":   "muted",
+			},
+		},
+		{
+			name:        "mentions-only accepts uppercase UUID",
+			preferences: map[string]string{"inbox_mode": "mentions_only"},
+			uppercaseID: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := db.New(testPool)
+			bus := newNotificationBus(t, queries)
+
+			recipientEmail := "notif-direct-mention-" + tc.name + "@multica.ai"
+			recipientID := createTestUser(t, recipientEmail)
+			t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+			addTestWorkspaceMember(t, recipientID)
+			if tc.preferences != nil {
+				setTestNotificationPreferences(t, queries, recipientID, tc.preferences)
+			}
+
+			issueID := createTestIssue(t, testWorkspaceID, testUserID)
+			t.Cleanup(func() {
+				cleanupInboxForIssue(t, issueID)
+				cleanupTestIssue(t, issueID)
+			})
+			addTestSubscriber(t, issueID, "member", recipientID, "manual")
+
+			var inboxEvents []events.Event
+			bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+				inboxEvents = append(inboxEvents, e)
+			})
+
+			mentionID := recipientID
+			if tc.uppercaseID {
+				mentionID = strings.ToUpper(mentionID)
+			}
+			content := "[@Recipient](mention://member/" + mentionID + ") please decide"
+			publishNotificationTestComment(bus, issueID, testUserID, content)
+
+			items := inboxItemsForRecipient(t, queries, recipientID)
+			if len(items) != 1 {
+				t.Fatalf("direct mention on a subscribed issue must create exactly one row, got %d", len(items))
+			}
+			if items[0].Type != "mentioned" {
+				t.Fatalf("direct mention row type = %q, want mentioned", items[0].Type)
+			}
+			if len(inboxEvents) != 1 {
+				t.Fatalf("direct mention must publish exactly one inbox:new event, got %d", len(inboxEvents))
+			}
+		})
+	}
+}
+
+func TestNotification_ForeignMemberMentionIsIgnored(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	recipientEmail := "notif-foreign-member@multica.ai"
+	recipientID := createTestUserWithoutWorkspaceMembership(t, recipientEmail)
+	t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+
+	var foreignWorkspaceID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO workspace (name, slug, description)
+		VALUES ('Foreign mention workspace', $1, '')
+		RETURNING id
+	`, "notif-foreign-"+recipientID).Scan(&foreignWorkspaceID); err != nil {
+		t.Fatalf("create foreign workspace: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'member')
+	`, foreignWorkspaceID, recipientID); err != nil {
+		t.Fatalf("add foreign workspace member: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
+	})
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+	description := "[@Foreign](mention://member/" + recipientID + ") should not cross workspaces"
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueCreated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:          issueID,
+				WorkspaceID: testWorkspaceID,
+				Title:       "foreign mention",
+				Description: &description,
+				Status:      "todo",
+				Priority:    "medium",
+				CreatorType: "member",
+				CreatorID:   testUserID,
+			},
+		},
+	})
+	if isSubscribed(t, queries, issueID, "member", recipientID) {
+		t.Fatal("foreign workspace member must not persist as an issue subscriber")
+	}
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:          issueID,
+				WorkspaceID: testWorkspaceID,
+				Title:       "foreign mention",
+				Status:      "in_progress",
+				Priority:    "medium",
+				CreatorType: "member",
+				CreatorID:   testUserID,
+			},
+			"status_changed": true,
+			"prev_status":    "todo",
+		},
+	})
+
+	if items := inboxItemsForRecipient(t, queries, recipientID); len(items) != 0 {
+		t.Fatalf("foreign workspace member must not receive an Inbox row, got %+v", items)
+	}
+	if len(inboxEvents) != 0 {
+		t.Fatalf("foreign workspace member must not receive inbox:new, got %d events", len(inboxEvents))
+	}
+}
+
+func TestNotification_RemovedSubscriberIsIgnored(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	recipientEmail := "notif-removed-subscriber@multica.ai"
+	recipientID := createTestUser(t, recipientEmail)
+	t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	addTestSubscriber(t, issueID, "member", recipientID, "manual")
+	if _, err := testPool.Exec(context.Background(), `
+		DELETE FROM member WHERE workspace_id = $1 AND user_id = $2
+	`, testWorkspaceID, recipientID); err != nil {
+		t.Fatalf("remove subscriber from workspace: %v", err)
+	}
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:          issueID,
+				WorkspaceID: testWorkspaceID,
+				Title:       "removed subscriber",
+				Status:      "in_progress",
+				Priority:    "medium",
+				CreatorType: "member",
+				CreatorID:   testUserID,
+			},
+			"status_changed": true,
+			"prev_status":    "todo",
+		},
+	})
+
+	if items := inboxItemsForRecipient(t, queries, recipientID); len(items) != 0 {
+		t.Fatalf("removed subscriber must not receive an Inbox row, got %+v", items)
+	}
+	if len(inboxEvents) != 0 {
+		t.Fatalf("removed subscriber must not receive inbox:new, got %d events", len(inboxEvents))
+	}
+}
+
+func TestNotification_RemovedDirectRecipientIsIgnored(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	recipientEmail := "notif-removed-direct@multica.ai"
+	recipientID := createTestUser(t, recipientEmail)
+	t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+	if _, err := testPool.Exec(context.Background(), `
+		DELETE FROM member WHERE workspace_id = $1 AND user_id = $2
+	`, testWorkspaceID, recipientID); err != nil {
+		t.Fatalf("remove direct recipient from workspace: %v", err)
+	}
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+	assigneeType := "member"
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueCreated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:           issueID,
+				WorkspaceID:  testWorkspaceID,
+				Title:        "removed direct recipient",
+				Status:       "todo",
+				Priority:     "medium",
+				CreatorType:  "member",
+				CreatorID:    testUserID,
+				AssigneeType: &assigneeType,
+				AssigneeID:   &recipientID,
+			},
+		},
+	})
+
+	if items := inboxItemsForRecipient(t, queries, recipientID); len(items) != 0 {
+		t.Fatalf("removed direct recipient must not receive an Inbox row, got %+v", items)
+	}
+	if len(inboxEvents) != 0 {
+		t.Fatalf("removed direct recipient must not receive inbox:new, got %d events", len(inboxEvents))
+	}
+}
+
+func TestNotification_MalformedMemberMentionIsIgnored(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+	description := "[@Malformed](mention://member/abcdef) must not panic"
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueCreated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:          issueID,
+				WorkspaceID: testWorkspaceID,
+				Title:       "malformed mention",
+				Description: &description,
+				Status:      "todo",
+				Priority:    "medium",
+				CreatorType: "member",
+				CreatorID:   testUserID,
+			},
+		},
+	})
+
+	if len(inboxEvents) != 0 {
+		t.Fatalf("malformed member mention must not publish inbox:new, got %d", len(inboxEvents))
+	}
+}
+
+func TestNotification_MentionsOnlyRejectsExpandedMentions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T, recipientID string) string
+	}{
+		{
+			name: "all broadcast",
+			content: func(_ *testing.T, _ string) string {
+				return "[@all](mention://all/all) routine update"
+			},
+		},
+		{
+			name: "squad expansion",
+			content: func(t *testing.T, recipientID string) string {
+				squadID := createNotificationTestSquad(t, recipientID)
+				return "[@Squad](mention://squad/" + squadID + ") routine update"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := db.New(testPool)
+			bus := newNotificationBus(t, queries)
+
+			recipientEmail := "notif-expanded-" + tc.name + "@multica.ai"
+			recipientID := createTestUser(t, recipientEmail)
+			t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+			addTestWorkspaceMember(t, recipientID)
+			setTestNotificationPreferences(t, queries, recipientID, map[string]string{"inbox_mode": "mentions_only"})
+
+			issueID := createTestIssue(t, testWorkspaceID, testUserID)
+			t.Cleanup(func() {
+				cleanupInboxForIssue(t, issueID)
+				cleanupTestIssue(t, issueID)
+			})
+
+			publishNotificationTestComment(bus, issueID, testUserID, tc.content(t, recipientID))
+
+			if items := inboxItemsForRecipient(t, queries, recipientID); len(items) != 0 {
+				t.Fatalf("expanded mention must not count in mentions-only mode, got %+v", items)
+			}
+		})
+	}
+}
+
+func TestNotification_MentionsOnlyAssignmentRequiresDirectMention(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		description func(recipientID string) *string
+		preferences map[string]string
+		wantType    string
+	}{
+		{
+			name:        "assignment only",
+			preferences: map[string]string{"inbox_mode": "mentions_only"},
+		},
+		{
+			name: "assignment with direct mention",
+			description: func(recipientID string) *string {
+				value := "[@Recipient](mention://member/" + recipientID + ") please own this"
+				return &value
+			},
+			preferences: map[string]string{"inbox_mode": "mentions_only"},
+			wantType:    "mentioned",
+		},
+		{
+			name: "muted assignment with enabled direct mention",
+			description: func(recipientID string) *string {
+				value := "[@Recipient](mention://member/" + recipientID + ") please own this"
+				return &value
+			},
+			preferences: map[string]string{
+				"inbox_mode":  "all",
+				"assignments": "muted",
+				"comments":    "all",
+			},
+			wantType: "mentioned",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := db.New(testPool)
+			bus := newNotificationBus(t, queries)
+
+			recipientEmail := "notif-assignment-" + tc.name + "@multica.ai"
+			recipientID := createTestUser(t, recipientEmail)
+			t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+			addTestWorkspaceMember(t, recipientID)
+			setTestNotificationPreferences(t, queries, recipientID, tc.preferences)
+
+			issueID := createTestIssue(t, testWorkspaceID, testUserID)
+			t.Cleanup(func() {
+				cleanupInboxForIssue(t, issueID)
+				cleanupTestIssue(t, issueID)
+			})
+
+			assigneeType := "member"
+			var description *string
+			if tc.description != nil {
+				description = tc.description(recipientID)
+			}
+			bus.Publish(events.Event{
+				Type:        protocol.EventIssueCreated,
+				WorkspaceID: testWorkspaceID,
+				ActorType:   "member",
+				ActorID:     testUserID,
+				Payload: map[string]any{
+					"issue": handler.IssueResponse{
+						ID:           issueID,
+						WorkspaceID:  testWorkspaceID,
+						Title:        "mentions-only assignment",
+						Description:  description,
+						Status:       "todo",
+						Priority:     "medium",
+						CreatorType:  "member",
+						CreatorID:    testUserID,
+						AssigneeType: &assigneeType,
+						AssigneeID:   &recipientID,
+					},
+				},
+			})
+
+			items := inboxItemsForRecipient(t, queries, recipientID)
+			if tc.wantType == "" {
+				if len(items) != 0 {
+					t.Fatalf("non-mentioned assignment must be suppressed, got %+v", items)
+				}
+				return
+			}
+			if len(items) != 1 || items[0].Type != tc.wantType {
+				t.Fatalf("direct mention must survive assignment dedup, got %+v", items)
+			}
+		})
+	}
 }
 
 // TestNotification_IssueCreated_AssigneeNotified verifies that when an issue is
@@ -538,8 +1139,8 @@ func TestNotification_AssigneeChanged(t *testing.T) {
 				AssigneeType: &newAssigneeType,
 				AssigneeID:   &newAssigneeID,
 			},
-			"assignee_changed":  true,
-			"status_changed":    false,
+			"assignee_changed":   true,
+			"status_changed":     false,
 			"prev_assignee_type": &oldAssigneeType,
 			"prev_assignee_id":   &oldAssigneeID,
 		},

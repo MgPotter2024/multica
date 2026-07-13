@@ -9,6 +9,7 @@ export function useUpdateNotificationPreferences() {
   const wsId = useWorkspaceId();
 
   return useMutation({
+    scope: { id: `notification-preferences:${wsId}` },
     mutationFn: (preferences: NotificationPreferences) =>
       api.updateNotificationPreferences(preferences),
     onMutate: async (preferences) => {

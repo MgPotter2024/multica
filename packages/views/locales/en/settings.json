@@ -63,6 +63,10 @@
     "title": "Inbox Notifications",
     "description": "Control which events generate inbox notifications. Muted event types are silently filtered — you can still see them by visiting the issue directly.",
     "toast_failed": "Failed to update notification settings",
+    "mentions_only": {
+      "label": "Only direct @mentions",
+      "description": "Only messages that explicitly @mention you enter your inbox and trigger browser notifications. Other activity remains on the issue."
+    },
     "groups": {
       "assignments": {
         "label": "Assignments",

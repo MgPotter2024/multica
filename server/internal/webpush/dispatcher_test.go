@@ -29,6 +29,8 @@ const (
 
 type fakeStore struct {
 	mu            sync.Mutex
+	membership    db.Member
+	membershipErr error
 	preference    db.NotificationPreference
 	preferenceErr error
 	workspace     db.Workspace
@@ -39,6 +41,13 @@ type fakeStore struct {
 	listStarted   chan struct{}
 	listStartOnce sync.Once
 	deleted       []pgtype.UUID
+}
+
+func (s *fakeStore) GetMemberByUserAndWorkspace(
+	_ context.Context,
+	_ db.GetMemberByUserAndWorkspaceParams,
+) (db.Member, error) {
+	return s.membership, s.membershipErr
 }
 
 func (s *fakeStore) GetNotificationPreference(_ context.Context, _ db.GetNotificationPreferenceParams) (db.NotificationPreference, error) {
@@ -146,6 +155,76 @@ func TestDispatchSkipsMutedWorkspace(t *testing.T) {
 	}
 	if sends != 0 {
 		t.Fatalf("muted workspace sent %d pushes", sends)
+	}
+}
+
+func TestDispatchSkipsRemovedMember(t *testing.T) {
+	store := &fakeStore{
+		membershipErr: pgx.ErrNoRows,
+		preferenceErr: pgx.ErrNoRows,
+		workspace:     db.Workspace{Slug: "acme"},
+		subscriptions: []db.WebPushSubscription{testStoredSubscription()},
+	}
+	var sends int
+	dispatcher := NewDispatcher(store, enabledTestConfig(t), WithSender(senderFunc(
+		func(context.Context, []byte, *webpushgo.Subscription, *webpushgo.Options) (*http.Response, error) {
+			sends++
+			return response(http.StatusCreated), nil
+		},
+	)))
+
+	if err := dispatcher.Dispatch(context.Background(), testInboxEvent()); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if sends != 0 {
+		t.Fatalf("removed member sent %d pushes", sends)
+	}
+}
+
+func TestDispatchFailsClosedOnMembershipLookupError(t *testing.T) {
+	store := &fakeStore{
+		membershipErr: errors.New("membership read failed"),
+		preferenceErr: pgx.ErrNoRows,
+		workspace:     db.Workspace{Slug: "acme"},
+		subscriptions: []db.WebPushSubscription{testStoredSubscription()},
+	}
+	var sends int
+	dispatcher := NewDispatcher(store, enabledTestConfig(t), WithSender(senderFunc(
+		func(context.Context, []byte, *webpushgo.Subscription, *webpushgo.Options) (*http.Response, error) {
+			sends++
+			return response(http.StatusCreated), nil
+		},
+	)))
+
+	err := dispatcher.Dispatch(context.Background(), testInboxEvent())
+	if err == nil || !strings.Contains(err.Error(), "verify push recipient membership") {
+		t.Fatalf("Dispatch error = %v, want membership lookup error", err)
+	}
+	if sends != 0 {
+		t.Fatalf("membership lookup failure sent %d pushes", sends)
+	}
+}
+
+func TestDispatchFailsClosedOnPreferenceDecodeError(t *testing.T) {
+	store := &fakeStore{
+		preference:    db.NotificationPreference{Preferences: []byte(`[]`)},
+		workspace:     db.Workspace{Slug: "acme"},
+		subscriptions: []db.WebPushSubscription{testStoredSubscription()},
+	}
+	var sends int
+	dispatcher := NewDispatcher(store, enabledTestConfig(t), WithSender(senderFunc(
+		func(context.Context, []byte, *webpushgo.Subscription, *webpushgo.Options) (*http.Response, error) {
+			sends++
+			return response(http.StatusCreated), nil
+		},
+	)))
+
+	err := dispatcher.Dispatch(context.Background(), testInboxEvent())
+	if err == nil || !strings.Contains(err.Error(), "decode notification preference") {
+		t.Fatalf("Dispatch error = %v, want preference decode error", err)
+	}
+	if sends != 0 {
+		t.Fatalf("preference decode failure sent %d pushes", sends)
 	}
 }
 

@@ -2,6 +2,7 @@
 title: Durable Web Push Notifications - Plan
 type: feat
 date: 2026-07-10
+updated: 2026-07-13
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -16,6 +17,8 @@ execution: code
 - Preserve existing inbox creation, realtime updates, per-workspace preferences, and desktop behavior.
 - Use standards-based Web Push with encrypted payloads and server-held VAPID private material.
 - Keep delivery best effort so push-provider failures never block issue comments or inbox persistence.
+- Add a per-user, per-workspace Mentions-only mode so ordinary agent traffic stays in issue history
+  and only a direct member `@mention` creates an Inbox item or automatic browser notification.
 - Publish the result as an immutable fork release based on `v0.3.43`.
 
 ---
@@ -27,6 +30,9 @@ execution: code
 The web client currently calls `new Notification()` only after a live `inbox:new` WebSocket event.
 This supports an open background tab but cannot deliver after the tab closes or a connection is missed.
 The new path registers a service worker and Push subscription, persists it for the authenticated user, and sends encrypted Web Push for eligible inbox events.
+The 2026-07-13 extension narrows eligibility before Inbox persistence: users may opt into a
+Mentions-only mode that keeps issue activity intact while suppressing unread Inbox rows and Push for
+all events except an explicit direct member mention.
 
 ### Requirements
 
@@ -40,6 +46,18 @@ The new path registers a service worker and Push subscription, persists it for t
 - R8. Browsers without Push support must retain the existing open-page Notification API fallback.
 - R9. Settings must display permission/subscription state and allow a user-initiated test notification.
 - R10. Deployment configuration and operator documentation must describe VAPID keys, image pinning, and verification.
+- R11. Notification settings must provide a per-user, per-workspace `mentions_only` Inbox mode while
+  preserving the existing all-events behavior when the mode is absent or disabled.
+- R12. In Mentions-only mode, assignments, unassignments, status changes, ordinary comments,
+  reactions, priority/date changes, task failures, and other direct or subscriber events must create
+  no Inbox row and therefore no automatic live or Web Push notification.
+- R13. A direct `mention://member/<user-id>` mention must create exactly one `mentioned` Inbox row
+  and one `inbox:new` event for that user, even when the user also subscribes to the issue. The
+  companion ordinary-comment notification must be suppressed for that recipient.
+- R14. `@all` and `@squad` expansion do not satisfy Mentions-only mode; only a direct member mention
+  targets the user. The user-initiated test-notification endpoint remains available.
+- R15. Enabling Mentions-only mode is prospective. Existing Inbox history is retained and no bulk
+  archive or delete occurs.
 
 ### Acceptance Examples
 
@@ -48,6 +66,17 @@ The new path registers a service worker and Push subscription, persists it for t
 - AE3. Given `system_notifications=muted` in workspace A and default preferences in workspace B, when both create inbox rows, then only workspace B sends Push.
 - AE4. Given a stale endpoint returns 410, when delivery runs, then the endpoint is deleted and the inbox request remains successful.
 - AE5. Given permission is granted but the backend subscription was lost, when the dashboard mounts, then the client recreates the subscription idempotently.
+- AE6. Given Potter has Mentions-only mode enabled, when agents assign, comment, change status, react,
+  or fail tasks without directly mentioning Potter, then Potter receives no new Inbox row, unread
+  count, realtime system banner, or Web Push.
+- AE7. Given Potter follows an issue and an agent posts one comment containing the exact direct Potter
+  member mention, then Potter receives exactly one `mentioned` Inbox row and one browser notification,
+  not both `new_comment` and `mentioned` rows.
+- AE8. Given an agent posts `@all` or mentions a squad containing Potter, when Mentions-only mode is
+  enabled, then Potter receives no Inbox row unless the same content also contains Potter's direct
+  member mention.
+- AE9. Given another member leaves Mentions-only mode disabled, when ordinary subscribed events occur,
+  then the existing notification groups and browser delivery behavior remain unchanged.
 
 ### Scope Boundaries
 
@@ -71,6 +100,12 @@ The new path registers a service worker and Push subscription, persists it for t
 - KTD7. Expose only VAPID availability and public key through the API; use environment variables for private key and subject.
 - KTD8. Reject partial or invalid VAPID configuration at startup; only an all-empty configuration intentionally disables Web Push.
 - KTD9. Allow at most five subscriptions per user, throttle explicit test sends, and permit cross-account endpoint transfer only when the browser encryption keys match.
+- KTD10. Store `inbox_mode=mentions_only` in the existing JSON notification preference record. Omitted
+  or `all` remains backward-compatible; no schema migration is required.
+- KTD11. Filter at server-side Inbox creation, before `CreateInboxItem` and `inbox:new`. The Web Push
+  dispatcher and service worker remain downstream consumers and require no event-source filtering.
+- KTD12. Preserve direct-mention provenance while expanding `@all` and `@squad` so Mentions-only users
+  are eligible only when their member UUID appeared explicitly in the parsed content.
 
 ### High-Level Technical Design
 
@@ -149,6 +184,25 @@ sequenceDiagram
 - **Test scenarios:** Compose config with variables unset and set, documentation parity, frontend image contains the service worker.
 - **Verification:** Run self-host config tests, docs checks, and inspect built container contents.
 
+### U6. Add Mentions-only Inbox mode
+
+- **Requirements:** R11-R15.
+- **Files:** `server/cmd/server/notification_listeners.go`,
+  `server/cmd/server/notification_listeners_test.go`,
+  `server/internal/handler/notification_preference.go`, `packages/core/types/notification-preference.ts`,
+  `packages/views/settings/components/notifications-tab.tsx`, settings locale files, and focused tests.
+- **Approach:** Validate and persist the new mode, expose it as a settings toggle, suppress every
+  non-mention Inbox path before persistence, distinguish direct member mentions from broadcast/squad
+  expansion, and deduplicate an ordinary subscriber comment when the same event directly mentions the
+  recipient.
+- **Execution note:** Add failing listener and preference-contract tests before changing delivery.
+- **Test scenarios:** Default behavior unchanged; settings validation accepts only `all|mentions_only`;
+  all ordinary event families suppressed; direct member mention creates exactly one row/event;
+  subscribed direct mention deduplicates; other-member, `@all`, and `@squad` mentions remain silent;
+  test notification still sends; historical rows remain untouched.
+- **Verification:** Run focused Go listener/handler tests, locale parity, settings tests, full backend
+  tests, frontend tests, typecheck, and production build.
+
 ---
 
 ## Verification Contract
@@ -163,12 +217,15 @@ sequenceDiagram
 | Production build | `pnpm build` | Next.js standalone output includes the worker and compiles |
 | Container build | Build `Dockerfile` and `Dockerfile.web` | Linux AMD64 images build from the release commit |
 | Browser smoke | Chrome on `https://multica.aiparis.org` | Background and closed-tab banners work; focused tab suppresses; click routes correctly |
+| Mentions-only smoke | Disposable test member plus Potter preference readback | Ordinary activity creates zero Potter rows; one direct mention creates exactly one row and one Push |
 
 ---
 
 ## Definition of Done
 
 - A closed production tab receives one banner for a newly created eligible inbox item.
+- With Potter's RunMux workspace preference set to Mentions-only, routine agent traffic creates zero
+  new Potter Inbox rows, while one direct Potter mention creates exactly one Inbox row and banner.
 - Preference mute, focused suppression, click routing, stale cleanup, and account isolation have automated coverage.
 - VAPID private material exists only in the protected VPS environment and is absent from repository history, command output, and logs.
 - The existing desktop bridge and unsupported-browser fallback continue to work.

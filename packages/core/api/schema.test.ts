@@ -202,6 +202,30 @@ describe("ApiClient schema fallback", () => {
     });
   });
 
+  describe("notification preferences", () => {
+    it("falls back to an empty response when GET returns malformed preferences", async () => {
+      stubFetchJson({ workspace_id: "workspace-1", preferences: [] });
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(client.getNotificationPreferences()).resolves.toEqual({
+        workspace_id: "",
+        preferences: {},
+      });
+    });
+
+    it("falls back to an empty response when PUT returns malformed preferences", async () => {
+      stubFetchJson({ workspace_id: 123, preferences: {} });
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(
+        client.updateNotificationPreferences({ inbox_mode: "mentions_only" }),
+      ).resolves.toEqual({
+        workspace_id: "",
+        preferences: {},
+      });
+    });
+  });
+
   describe("listGroupedIssues", () => {
     it("falls back to empty groups when the response is malformed", async () => {
       stubFetchJson({ groups: "not-an-array" });

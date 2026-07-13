@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inboxpolicy"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -231,6 +232,35 @@ func emitAutopilotPausedNotifications(
 			continue
 		}
 		emitted[key] = true
+
+		if r.Type == "member" {
+			active, memberErr := inboxpolicy.IsActiveMember(ctx, queries, autopilot.WorkspaceID, r.ID)
+			if memberErr != nil {
+				slog.Warn("autopilot failure monitor: recipient membership read failed",
+					"autopilot_id", autopilotIDStr,
+					"recipient_id", util.UUIDToString(r.ID),
+					"error", memberErr,
+				)
+				continue
+			}
+			if !active {
+				continue
+			}
+			suppressed, prefErr := inboxpolicy.ShouldSuppressForMember(
+				ctx, queries, autopilot.WorkspaceID, r.ID, "autopilot_paused", false,
+			)
+			if prefErr != nil {
+				slog.Warn("autopilot failure monitor: notification preference read failed",
+					"autopilot_id", autopilotIDStr,
+					"recipient_id", util.UUIDToString(r.ID),
+					"error", prefErr,
+				)
+				continue
+			}
+			if suppressed {
+				continue
+			}
+		}
 
 		item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
 			WorkspaceID:   autopilot.WorkspaceID,

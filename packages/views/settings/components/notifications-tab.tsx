@@ -49,6 +49,24 @@ export function NotificationsTab() {
     });
   };
 
+  const handleInboxModeToggle = (enabled: boolean) => {
+    const updated: NotificationPreferences = { ...preferences };
+    if (enabled) {
+      updated.inbox_mode = "mentions_only";
+    } else {
+      delete updated.inbox_mode;
+    }
+    mutation.mutate(updated, {
+      onError: (err) =>
+        toast.error(
+          err instanceof Error && err.message
+            ? err.message
+            : t(($) => $.notifications.toast_failed),
+        ),
+    });
+  };
+
+  const mentionsOnly = preferences.inbox_mode === "mentions_only";
   const systemEnabled = preferences.system_notifications !== "muted";
 
   return (
@@ -60,6 +78,27 @@ export function NotificationsTab() {
             {t(($) => $.notifications.description)}
           </p>
         </div>
+
+        <Card>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5 pr-4">
+                <p className="text-sm font-medium">
+                  {t(($) => $.notifications.mentions_only.label)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t(($) => $.notifications.mentions_only.description)}
+                </p>
+              </div>
+              <Switch
+                aria-label={t(($) => $.notifications.mentions_only.label)}
+                checked={mentionsOnly}
+                disabled={mutation.isPending}
+                onCheckedChange={handleInboxModeToggle}
+              />
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardContent className="divide-y">
@@ -77,7 +116,9 @@ export function NotificationsTab() {
                     </p>
                   </div>
                   <Switch
+                    aria-label={t(($) => $.notifications.groups[key].label)}
                     checked={enabled}
+                    disabled={mentionsOnly || mutation.isPending}
                     onCheckedChange={(checked) => handleToggle(key, checked)}
                   />
                 </div>
@@ -105,7 +146,9 @@ export function NotificationsTab() {
                 </p>
               </div>
               <Switch
+                aria-label={t(($) => $.notifications.system.label)}
                 checked={systemEnabled}
+                disabled={mutation.isPending}
                 onCheckedChange={(checked) => handleToggle("system_notifications", checked)}
               />
             </div>

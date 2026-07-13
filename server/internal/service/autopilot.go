@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inboxpolicy"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -468,6 +469,32 @@ func (s *AutopilotService) notifyAutopilotSubscribersOnCreate(
 		// handler boundary; defend in case that constraint is ever relaxed
 		// (agents don't have inbox).
 		if sub.UserType != "member" {
+			continue
+		}
+		active, memberErr := inboxpolicy.IsActiveMember(ctx, s.Queries, ap.WorkspaceID, sub.UserID)
+		if memberErr != nil {
+			slog.Error("autopilot subscriber membership read failed",
+				"autopilot_id", util.UUIDToString(ap.ID),
+				"recipient_id", util.UUIDToString(sub.UserID),
+				"error", memberErr,
+			)
+			continue
+		}
+		if !active {
+			continue
+		}
+		suppressed, prefErr := inboxpolicy.ShouldSuppressForMember(
+			ctx, s.Queries, ap.WorkspaceID, sub.UserID, "issue_subscribed", false,
+		)
+		if prefErr != nil {
+			slog.Error("autopilot subscriber notification preference read failed",
+				"autopilot_id", util.UUIDToString(ap.ID),
+				"recipient_id", util.UUIDToString(sub.UserID),
+				"error", prefErr,
+			)
+			continue
+		}
+		if suppressed {
 			continue
 		}
 		item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{

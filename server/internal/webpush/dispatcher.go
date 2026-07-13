@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inboxpolicy"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -40,6 +41,7 @@ var (
 )
 
 type Store interface {
+	GetMemberByUserAndWorkspace(context.Context, db.GetMemberByUserAndWorkspaceParams) (db.Member, error)
 	GetNotificationPreference(context.Context, db.GetNotificationPreferenceParams) (db.NotificationPreference, error)
 	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
 	ListWebPushSubscriptionsByUser(context.Context, pgtype.UUID) ([]db.WebPushSubscription, error)
@@ -178,6 +180,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, event events.Event) error {
 	}
 	dispatchCtx, cancel := context.WithTimeout(ctx, d.dispatchTimeout)
 	defer cancel()
+
+	active, err := inboxpolicy.IsActiveMember(dispatchCtx, d.store, item.workspaceID, item.recipientID)
+	if err != nil {
+		return fmt.Errorf("verify push recipient membership: %w", err)
+	}
+	if !active {
+		return nil
+	}
 
 	muted, err := d.isMuted(dispatchCtx, item.workspaceID, item.recipientID)
 	if err != nil {
@@ -341,7 +351,7 @@ func (d *Dispatcher) isMuted(ctx context.Context, workspaceID, userID pgtype.UUI
 		return false, nil
 	}
 	if err := json.Unmarshal(preference.Preferences, &preferences); err != nil {
-		return false, nil
+		return false, fmt.Errorf("decode notification preference: %w", err)
 	}
 	return preferences["system_notifications"] == "muted", nil
 }

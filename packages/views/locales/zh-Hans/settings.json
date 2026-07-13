@@ -63,6 +63,10 @@
     "title": "收件箱通知",
     "description": "控制哪些事件会产生收件箱通知。被静默的事件类型仍然存在——可以直接到 issue 页面查看。",
     "toast_failed": "更新通知设置失败",
+    "mentions_only": {
+      "label": "仅限直接 @我",
+      "description": "只有明确 @你的消息会进入收件箱并触发浏览器通知。其他动态仍保留在 issue 中。"
+    },
     "groups": {
       "assignments": {
         "label": "分配",

@@ -37,6 +37,13 @@ func createTestIssue(t *testing.T, workspaceID, creatorID string) string {
 // createTestUser inserts a user with the given email and returns the UUID string.
 func createTestUser(t *testing.T, email string) string {
 	t.Helper()
+	userID := createTestUserWithoutWorkspaceMembership(t, email)
+	addTestWorkspaceMember(t, userID)
+	return userID
+}
+
+func createTestUserWithoutWorkspaceMembership(t *testing.T, email string) string {
+	t.Helper()
 	ctx := context.Background()
 	var userID string
 	err := testPool.QueryRow(ctx, `
@@ -48,6 +55,17 @@ func createTestUser(t *testing.T, email string) string {
 		t.Fatalf("createTestUser: %v", err)
 	}
 	return userID
+}
+
+func addTestWorkspaceMember(t *testing.T, userID string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'member')
+		ON CONFLICT (workspace_id, user_id) DO NOTHING
+	`, testWorkspaceID, userID); err != nil {
+		t.Fatalf("add workspace member: %v", err)
+	}
 }
 
 func cleanupTestIssue(t *testing.T, issueID string) {
