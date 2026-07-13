@@ -745,6 +745,51 @@ func TestNotification_IssueCreated_AssigneeNotified(t *testing.T) {
 	}
 }
 
+func TestNotification_IssueCreated_SquadAssigneeDoesNotCreateInboxOrSubscriber(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+
+	squadID := createNotificationTestSquad(t, testUserID)
+	squadType := "squad"
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueCreated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:           issueID,
+				WorkspaceID:  testWorkspaceID,
+				Title:        "squad-assigned notification test",
+				Status:       "todo",
+				Priority:     "medium",
+				CreatorType:  "member",
+				CreatorID:    testUserID,
+				AssigneeType: &squadType,
+				AssigneeID:   &squadID,
+			},
+		},
+	})
+
+	if len(inboxEvents) != 0 {
+		t.Fatalf("squad assignment must not create inbox events, got %d", len(inboxEvents))
+	}
+	if count := subscriberCount(t, queries, issueID); count != 1 {
+		t.Fatalf("expected only the creator subscriber, got %d", count)
+	}
+}
+
 // TestNotification_IssueCreated_SelfAssign verifies that when the creator
 // assigns the issue to themselves, no notification is generated.
 func TestNotification_IssueCreated_SelfAssign(t *testing.T) {
