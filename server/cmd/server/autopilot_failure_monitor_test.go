@@ -192,6 +192,47 @@ func TestAutopilotFailureMonitor_LeavesAlreadyPausedAlone(t *testing.T) {
 	}
 }
 
+func TestAutopilotFailureMonitor_MentionsOnlySuppressesInbox(t *testing.T) {
+	queries := db.New(testPool)
+	bus := events.New()
+	setTestNotificationPreferences(t, queries, testUserID, map[string]string{"inbox_mode": "mentions_only"})
+
+	cfg := failureMonitorConfig{
+		Interval:  time.Hour,
+		Lookback:  7 * 24 * time.Hour,
+		MinRuns:   10,
+		FailRatio: 0.9,
+	}
+	agentID := pickFixtureAgent(t)
+	ap := seedAutopilot(t, queries, "Failure monitor: mentions-only", "member", parseUUID(testUserID), agentID)
+	seedAutopilotRuns(t, ap.ID, 12, 11, time.Now().Add(-time.Hour))
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+
+	tickAutopilotFailureMonitor(context.Background(), queries, bus, cfg)
+
+	if got := reloadAutopilotStatus(t, queries, ap.ID); got != "paused" {
+		t.Fatalf("monitor must still pause the autopilot, got %q", got)
+	}
+	if len(inboxEvents) != 0 {
+		t.Fatalf("mentions-only monitor must not publish inbox:new, got %d", len(inboxEvents))
+	}
+	var inboxCount int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM inbox_item
+		WHERE workspace_id = $1 AND recipient_id = $2
+		  AND type = 'autopilot_paused' AND details->>'autopilot_id' = $3
+	`, testWorkspaceID, testUserID, util.UUIDToString(ap.ID)).Scan(&inboxCount); err != nil {
+		t.Fatalf("count autopilot paused inbox rows: %v", err)
+	}
+	if inboxCount != 0 {
+		t.Fatalf("mentions-only monitor must suppress persistence, got %d rows", inboxCount)
+	}
+}
+
 func TestAutopilotFailureMonitor_AgentCreatorRoutesToOwner(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()

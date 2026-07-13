@@ -1,6 +1,6 @@
 ---
 name: multica-mentioning
-description: "Use when an issue comment needs to @mention someone — link to a person, trigger another agent, hand work to a squad, or broadcast with @all. Documents the verified mention contract: how a mention link is built from a real UUID, the four mention types and exactly what each one enqueues (agent → a run for that agent, squad → a run for the squad leader, member and issue → a rendered link with NO run), comment create/edit preview and suppression, the @all broadcast and how it suppresses the assignee's auto-trigger, and the silent no-op cases (a name where a UUID belongs, a bad/unknown UUID, an already-pending task, an archived agent, a private agent you cannot access). WHETHER to mention — loop avoidance, staying silent on acknowledgements — lives in the runtime brief's Mentions section, not here. This skill is the backend contract only, traced to server/internal/util/mention.go and server/internal/handler/comment.go."
+description: "Use when an issue comment needs to @mention someone — notify a person, trigger another agent, hand work to a squad, or broadcast with @all. Documents the verified mention contract: how a mention link is built from a real UUID; agent and squad run routing; direct member Inbox delivery; issue-link no-op behavior; mentions-only eligibility; comment preview and suppression; @all behavior; and silent no-op cases. WHETHER to mention — loop avoidance and staying silent on acknowledgements — lives in the runtime brief's Mentions section, not here. This skill is the backend contract traced to the mention parser, comment handler, and notification listener."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -54,8 +54,8 @@ match, or the link resolves to the wrong entity (or to nothing).
 | -------------------- | -------- | --------------- | -------------------------------------------------------- |
 | trigger an agent     | `agent`  | agent.id        | enqueues a run for that agent (`EnqueueTaskForMention`)  |
 | hand work to a squad | `squad`  | squad.id        | resolves the squad's `leader_id` and enqueues a run for the LEADER agent |
-| link a person        | `member` | member.user_id  | renders a link; enqueues NOTHING — no agent run          |
-| reference an issue   | `issue`  | issue.id        | renders a link; enqueues NOTHING — always safe           |
+| notify a person      | `member` | member.user_id  | creates one `mentioned` Inbox item/event; enqueues NO agent run |
+| reference an issue   | `issue`  | issue.id        | renders a link; creates no Inbox item and enqueues no run |
 
 The mention trigger set is computed by `computeMentionedAgentCommentTriggers`
 (`server/internal/handler/comment.go`); the comment path folds that result into
@@ -65,10 +65,41 @@ leader to the trigger set; everything that is not `agent` after that is skipped
 (`if m.Type != "agent" { continue }`), then the `agent` branch adds that agent.
 A `member` or `issue` mention reaches neither branch, so it enqueues no task.
 
-A `member` mention therefore does NOT make a person "run", and this skill does
-NOT claim it delivers a notification through the Go comment handler — there is
-no such code path in that handler (see the source map). What is verified is the
-contract above: only `agent` and `squad` mentions enqueue work.
+A `member` mention therefore does NOT make a person "run". Agent work routing
+lives in `server/internal/handler/comment.go`; member Inbox delivery is a
+separate event-listener concern in
+`server/cmd/server/notification_listeners.go`. Only `agent` and `squad`
+mentions enqueue work, while a valid direct `member` mention creates one
+`mentioned` Inbox row and one `inbox:new` event for that member.
+
+## Direct member mentions and Inbox modes
+
+Notification preferences are workspace-scoped. With no `inbox_mode`, or with
+`inbox_mode=all`, normal Inbox behavior remains active. With
+`inbox_mode=mentions_only`, the backend suppresses future Inbox rows before
+persistence unless the recipient appears in an explicit
+`mention://member/<user_id>` link.
+
+Only that direct `member` link qualifies. A human reached indirectly through
+`@all` or through a squad's member expansion does NOT qualify for
+mentions-only delivery. A direct member mention is authoritative in this mode:
+it is delivered even if the legacy `comments` preference is still `muted`.
+The UUID must resolve to an active member of the same workspace. Foreign,
+removed, or malformed member IDs create neither an Inbox item nor a durable
+issue subscription. Valid uppercase UUID text is canonicalized before matching.
+
+Preference reads fail closed: if the backend cannot read or decode a member's
+preference row, it creates no new Inbox item for that recipient. A genuinely
+absent preference row is different and keeps default delivery behavior.
+Before native Web Push delivery, the dispatcher checks workspace membership
+again so a member removed after Inbox persistence receives no browser alert.
+The explicit user-triggered Web Push test is user-scoped and remains available.
+
+If the directly mentioned member already subscribes to the issue, the listener
+suppresses the companion `new_comment` notification. The result is still
+exactly one `mentioned` Inbox row and one `inbox:new` event, not two alerts for
+the same comment. Preference changes affect future writes only; existing Inbox
+history is not rewritten.
 
 ## Preview and per-comment suppression
 
@@ -139,7 +170,8 @@ Incorrect: `[@Alice](mention://member/Alice) please review`
 Correct:
   1. `multica workspace member list --output json`  → Alice's `user_id` = 7f3a…
   2. `[@Alice](mention://member/7f3a…) please review`
-     → a real `user_id` parses; the link renders and resolves to Alice.
+     → a real `user_id` parses; the link resolves to Alice and creates her
+       `mentioned` Inbox signal.
 
 @all broadcast: `[@all](mention://all/all) heads up` — addresses everyone,
 runs no specific agent, and suppresses the assignee auto-trigger.
@@ -152,7 +184,6 @@ still parses (which is why the type must match the id source).
 
 ## References
 
-`references/mentioning-source-map.md` — file:line evidence for the regex, the
-enqueue branches, the @all suppression, and the CLI id-source mapping, plus the
-explicit note that no member-notification delivery path exists in the Go
-comment handler.
+`references/mentioning-source-map.md` — file:line evidence for the regex, agent
+enqueue branches, member Inbox delivery, mentions-only gating, @all
+suppression, and CLI id-source mapping.

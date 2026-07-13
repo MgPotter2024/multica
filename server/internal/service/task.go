@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/inboxpolicy"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -3288,6 +3289,26 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 			},
 		})
 	}
+	active, memberErr := inboxpolicy.IsActiveMember(ctx, s.Queries, workspaceID, requesterID)
+	if memberErr != nil {
+		slog.Error("quick-create completion: requester membership read failed",
+			"task_id", util.UUIDToString(task.ID), "error", memberErr)
+		return
+	}
+	if !active {
+		return
+	}
+	suppressed, prefErr := inboxpolicy.ShouldSuppressForMember(
+		ctx, s.Queries, workspaceID, requesterID, "quick_create_done", false,
+	)
+	if prefErr != nil {
+		slog.Error("quick-create completion: notification preference read failed",
+			"task_id", util.UUIDToString(task.ID), "error", prefErr)
+		return
+	}
+	if suppressed {
+		return
+	}
 	prefix := s.getIssuePrefix(workspaceID)
 	identifier := fmt.Sprintf("%s-%d", prefix, issue.Number)
 	details, _ := json.Marshal(map[string]any{
@@ -3332,6 +3353,26 @@ func (s *TaskService) notifyQuickCreateFailed(ctx context.Context, task db.Agent
 	}
 	if errMsg == "" {
 		errMsg = "Quick create did not finish successfully"
+	}
+	active, memberErr := inboxpolicy.IsActiveMember(ctx, s.Queries, workspaceID, requesterID)
+	if memberErr != nil {
+		slog.Error("quick-create failure: requester membership read failed",
+			"task_id", util.UUIDToString(task.ID), "error", memberErr)
+		return
+	}
+	if !active {
+		return
+	}
+	suppressed, prefErr := inboxpolicy.ShouldSuppressForMember(
+		ctx, s.Queries, workspaceID, requesterID, "quick_create_failed", false,
+	)
+	if prefErr != nil {
+		slog.Error("quick-create failure: notification preference read failed",
+			"task_id", util.UUIDToString(task.ID), "error", prefErr)
+		return
+	}
+	if suppressed {
+		return
 	}
 	details, _ := json.Marshal(map[string]any{
 		"task_id":         util.UUIDToString(task.ID),

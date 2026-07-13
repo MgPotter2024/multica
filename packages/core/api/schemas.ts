@@ -18,6 +18,7 @@ import type {
   InboxWorkspaceUnread,
   ListIssuesResponse,
   ListWebhookDeliveriesResponse,
+  NotificationPreferenceResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   Squad,
@@ -221,6 +222,16 @@ export const WebPushConfigSchema = z
 export const EMPTY_WEB_PUSH_CONFIG: WebPushConfig = {
   enabled: false,
   publicKey: "",
+};
+
+export const NotificationPreferenceResponseSchema = z.object({
+  workspace_id: z.string(),
+  preferences: z.record(z.string(), z.string()).default({}),
+}).loose();
+
+export const EMPTY_NOTIFICATION_PREFERENCE_RESPONSE: NotificationPreferenceResponse = {
+  workspace_id: "",
+  preferences: {},
 };
 
 export const CreateFeedbackResponseSchema = z.object({

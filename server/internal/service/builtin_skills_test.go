@@ -138,6 +138,24 @@ func TestMentioningSkillFollowsContractFrontmatter(t *testing.T) {
 	}
 }
 
+func TestMentioningSkillDocumentsMemberInboxContract(t *testing.T) {
+	skill, ok := findSkill(t, "multica-mentioning")
+	if !ok {
+		return
+	}
+
+	for _, required := range []string{
+		"inbox_mode=mentions_only",
+		"mention://member/<user_id>",
+		"exactly one `mentioned` Inbox row",
+		"legacy `comments` preference is still `muted`",
+	} {
+		if !strings.Contains(skill.Content, required) {
+			t.Errorf("mentioning skill must document %q", required)
+		}
+	}
+}
+
 // TestMentioningSkillTeachesTheParserContract is the eval that gives the skill
 // its value: it proves the skill teaches exactly what util.ParseMentions
 // enforces. The skill's "Incorrect" examples must parse to nothing (the

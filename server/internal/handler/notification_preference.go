@@ -7,29 +7,22 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/inboxpolicy"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// validNotifGroups is the set of notification preference group keys that the
-// API accepts. Keys not in this set are rejected. `system_notifications` is
-// not an inbox event group — it's a delivery-channel toggle controlling
-// whether native OS notification banners fire — but it shares the same
-// preferences map so a single endpoint covers all user notification
-// preferences.
-var validNotifGroups = map[string]bool{
-	"assignments":          true,
-	"status_changes":       true,
-	"comments":             true,
-	"updates":              true,
-	"agent_activity":       true,
-	"system_notifications": true,
-}
-
-// validNotifValues is the set of allowed preference values per group.
-var validNotifValues = map[string]bool{
-	"all":   true,
-	"muted": true,
+// validNotifValues maps each notification preference key to its allowed
+// values. `system_notifications` controls native OS banners, while
+// `inbox_mode` controls which future inbox rows are eligible for persistence.
+var validNotifValues = map[string]map[string]bool{
+	"assignments":          {"all": true, "muted": true},
+	"status_changes":       {"all": true, "muted": true},
+	"comments":             {"all": true, "muted": true},
+	"updates":              {"all": true, "muted": true},
+	"agent_activity":       {"all": true, "muted": true},
+	"system_notifications": {"all": true, "muted": true},
+	"inbox_mode":           {inboxpolicy.ModeAll: true, inboxpolicy.ModeMentionsOnly: true},
 }
 
 func (h *Handler) GetNotificationPreferences(w http.ResponseWriter, r *http.Request) {
@@ -90,11 +83,12 @@ func (h *Handler) UpdateNotificationPreferences(w http.ResponseWriter, r *http.R
 	}
 
 	for k, v := range req.Preferences {
-		if !validNotifGroups[k] {
+		values, ok := validNotifValues[k]
+		if !ok {
 			writeError(w, http.StatusBadRequest, "invalid preference group: "+k)
 			return
 		}
-		if !validNotifValues[v] {
+		if !values[v] {
 			writeError(w, http.StatusBadRequest, "invalid preference value: "+v)
 			return
 		}

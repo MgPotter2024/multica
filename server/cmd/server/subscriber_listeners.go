@@ -6,6 +6,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -39,7 +40,7 @@ func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
 		// Subscribe @mentioned users in description
 		if issue.Description != nil && *issue.Description != "" {
 			for _, m := range parseMentions(*issue.Description) {
-				addSubscriber(bus, queries, e.WorkspaceID, issue.ID, m.Type, m.ID, "mentioned")
+				addMentionedSubscriber(bus, queries, e.WorkspaceID, issue.ID, m)
 			}
 		}
 	})
@@ -74,7 +75,7 @@ func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
 				}
 				for _, m := range newMentions {
 					if !prevMentioned[m.Type+":"+m.ID] {
-						addSubscriber(bus, queries, e.WorkspaceID, issue.ID, m.Type, m.ID, "mentioned")
+						addMentionedSubscriber(bus, queries, e.WorkspaceID, issue.ID, m)
 					}
 				}
 			}
@@ -144,13 +145,53 @@ func extractIssueFields(v any) (handler.IssueResponse, bool) {
 	return issue, true
 }
 
+func addMentionedSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID string, m mention) {
+	if m.Type == "agent" {
+		addSubscriber(bus, queries, workspaceID, issueID, m.Type, m.ID, "mentioned")
+		return
+	}
+	if m.Type != "member" {
+		return
+	}
+
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		slog.Error("failed to parse mentioned subscriber workspace ID", "workspace_id", workspaceID, "error", err)
+		return
+	}
+	userUUID, err := util.ParseUUID(m.ID)
+	if err != nil {
+		slog.Error("failed to parse mentioned subscriber user ID", "user_id", m.ID, "error", err)
+		return
+	}
+	if _, err := queries.GetMemberByUserAndWorkspace(context.Background(), db.GetMemberByUserAndWorkspaceParams{
+		UserID:      userUUID,
+		WorkspaceID: workspaceUUID,
+	}); err != nil {
+		slog.Warn("ignored mention subscriber outside workspace",
+			"workspace_id", workspaceID, "user_id", m.ID, "error", err)
+		return
+	}
+	addSubscriber(bus, queries, workspaceID, issueID, m.Type, m.ID, "mentioned")
+}
+
 // addSubscriber adds a user as an issue subscriber and publishes a
 // subscriber:added event for real-time frontend sync.
 func addSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID, userType, userID, reason string) {
-	err := queries.AddIssueSubscriber(context.Background(), db.AddIssueSubscriberParams{
-		IssueID:  parseUUID(issueID),
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		slog.Error("failed to parse issue subscriber issue ID", "issue_id", issueID, "error", err)
+		return
+	}
+	userUUID, err := util.ParseUUID(userID)
+	if err != nil {
+		slog.Error("failed to parse issue subscriber user ID", "user_id", userID, "error", err)
+		return
+	}
+	err = queries.AddIssueSubscriber(context.Background(), db.AddIssueSubscriberParams{
+		IssueID:  issueUUID,
 		UserType: userType,
-		UserID:   parseUUID(userID),
+		UserID:   userUUID,
 		Reason:   reason,
 	})
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // TestQuickCreateCompletion_SubscribesRequester locks in the fix for the
@@ -44,6 +45,7 @@ func TestQuickCreateCompletion_SubscribesRequester(t *testing.T) {
 		t.Fatalf("EnqueueQuickCreateTask: %v", err)
 	}
 	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE details->>'task_id' = $1`, util.UUIDToString(task.ID))
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, task.ID)
 	})
 
@@ -119,6 +121,7 @@ func TestQuickCreateFailure_DoesNotSubscribeRequester(t *testing.T) {
 		t.Fatalf("EnqueueQuickCreateTask: %v", err)
 	}
 	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE details->>'task_id' = $1`, util.UUIDToString(task.ID))
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, task.ID)
 	})
 
@@ -150,5 +153,130 @@ func TestQuickCreateFailure_DoesNotSubscribeRequester(t *testing.T) {
 	}
 	if leaked != 0 {
 		t.Fatalf("expected no subscriber rows for failed quick-create, got %d", leaked)
+	}
+}
+
+func startMentionsOnlyQuickCreateTask(
+	t *testing.T,
+	prompt string,
+) (*db.Queries, *events.Bus, *service.TaskService, db.AgentTaskQueue, string) {
+	t.Helper()
+	ctx := context.Background()
+	queries := db.New(testPool)
+	bus := events.New()
+	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
+	setTestNotificationPreferences(t, queries, testUserID, map[string]string{"inbox_mode": "mentions_only"})
+
+	var agentID string
+	if err := testPool.QueryRow(ctx,
+		`SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID); err != nil {
+		t.Fatalf("load fixture agent: %v", err)
+	}
+
+	task, err := taskSvc.EnqueueQuickCreateTask(ctx,
+		parseUUID(testWorkspaceID),
+		parseUUID(testUserID),
+		parseUUID(agentID),
+		pgtype.UUID{},
+		prompt,
+		pgtype.UUID{},
+		pgtype.UUID{},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("EnqueueQuickCreateTask: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE details->>'task_id' = $1`, util.UUIDToString(task.ID))
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, task.ID)
+	})
+
+	if _, err := testPool.Exec(ctx,
+		`UPDATE agent_task_queue SET status = 'dispatched', dispatched_at = now() WHERE id = $1`,
+		task.ID,
+	); err != nil {
+		t.Fatalf("dispatch task: %v", err)
+	}
+	if _, err := queries.StartAgentTask(ctx, task.ID); err != nil {
+		t.Fatalf("StartAgentTask: %v", err)
+	}
+
+	return queries, bus, taskSvc, task, agentID
+}
+
+func TestQuickCreateCompletion_MentionsOnlySuppressesInbox(t *testing.T) {
+	ctx := context.Background()
+	queries, bus, taskSvc, task, agentID := startMentionsOnlyQuickCreateTask(t, "quiet completion")
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+
+	number, err := queries.IncrementIssueCounter(ctx, parseUUID(testWorkspaceID))
+	if err != nil {
+		t.Fatalf("IncrementIssueCounter: %v", err)
+	}
+	issue, err := queries.CreateIssueWithOrigin(ctx, db.CreateIssueWithOriginParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Title:       "quiet agent-filed issue",
+		Status:      "todo",
+		Priority:    "none",
+		CreatorType: "agent",
+		CreatorID:   parseUUID(agentID),
+		Number:      number,
+		OriginType:  pgtype.Text{String: "quick_create", Valid: true},
+		OriginID:    task.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOrigin: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issue.ID)
+	})
+
+	if _, err := taskSvc.CompleteTask(ctx, task.ID, []byte(`{"output":"done"}`), "", ""); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	if !isSubscribed(t, queries, util.UUIDToString(issue.ID), "member", testUserID) {
+		t.Fatal("mentions-only must preserve the requester's issue subscription")
+	}
+
+	var inboxCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM inbox_item
+		WHERE details->>'task_id' = $1 AND type = 'quick_create_done'
+	`, util.UUIDToString(task.ID)).Scan(&inboxCount); err != nil {
+		t.Fatalf("count quick-create completion inbox rows: %v", err)
+	}
+	if inboxCount != 0 || len(inboxEvents) != 0 {
+		t.Fatalf("mentions-only quick-create completion must stay out of Inbox, rows=%d events=%d", inboxCount, len(inboxEvents))
+	}
+}
+
+func TestQuickCreateFailure_MentionsOnlySuppressesInbox(t *testing.T) {
+	ctx := context.Background()
+	_, bus, taskSvc, task, _ := startMentionsOnlyQuickCreateTask(t, "quiet failure")
+
+	var inboxEvents []events.Event
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		inboxEvents = append(inboxEvents, e)
+	})
+
+	if _, err := taskSvc.CompleteTask(ctx, task.ID, []byte(`{"output":"done"}`), "", ""); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+
+	var inboxCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM inbox_item
+		WHERE details->>'task_id' = $1 AND type = 'quick_create_failed'
+	`, util.UUIDToString(task.ID)).Scan(&inboxCount); err != nil {
+		t.Fatalf("count quick-create failure inbox rows: %v", err)
+	}
+	if inboxCount != 0 || len(inboxEvents) != 0 {
+		t.Fatalf("mentions-only quick-create failure must stay out of Inbox, rows=%d events=%d", inboxCount, len(inboxEvents))
 	}
 }

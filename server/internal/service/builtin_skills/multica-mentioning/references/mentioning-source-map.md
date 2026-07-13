@@ -41,6 +41,30 @@ a pointer.
 | `agent` → shared enqueue helper calls `EnqueueTaskForMention` (a run for that agent) | `server/internal/handler/comment.go:1148-1154` |
 | **`member` and `issue` mentions reach neither branch — they enqueue NOTHING.** A `member` mention fails the `!= "agent"` skip at lines 1437-1439 (the squad branch above it only matches `squad`); an `issue` mention does the same. | `server/internal/handler/comment.go:1397,1437-1439` |
 
+This table describes agent-run enqueueing only. A direct `member` mention also
+has the independent Inbox delivery path below.
+
+## Member mention Inbox delivery
+
+| Fact | Source |
+| --- | --- |
+| Notification preferences are keyed by `(workspace_id, user_id)`, so `inbox_mode` is workspace-scoped | `server/pkg/db/queries/notification_preference.sql:1-15`; `server/internal/inboxpolicy/policy.go:77-100` |
+| Missing `inbox_mode` and `inbox_mode=all` retain the event-group preference behavior | `server/internal/inboxpolicy/policy.go:62-72` |
+| `inbox_mode=mentions_only` permits only `type=mentioned` with `directMemberMention=true`; this branch is authoritative over the legacy `comments=muted` value | `server/internal/inboxpolicy/policy.go:62-72` |
+| Direct member UUIDs are safely parsed and canonicalized, including valid uppercase text | `server/cmd/server/notification_listeners.go:78-90` |
+| Every direct, `@all`, and squad-expanded human recipient is filtered against one current workspace-member roster before preference lookup or persistence | `server/cmd/server/notification_listeners.go:479-537` |
+| Foreign or malformed description mentions cannot persist as issue subscribers | `server/cmd/server/subscriber_listeners.go:40-44,66-79,148-175` |
+| Existing subscriber rows are filtered against the current workspace roster before preferences, Inbox persistence, or realtime publication | `server/cmd/server/notification_listeners.go:296-354` |
+| Member-targeted direct notifications verify current membership before preferences or persistence | `server/cmd/server/notification_listeners.go:388-433` |
+| Batch preference query/decode failures mark affected recipients unavailable and fail closed; a missing row remains the default | `server/cmd/server/notification_listeners.go:99-143,323-354,424-433,549-566` |
+| Standalone membership and preference checks precede autopilot subscriber, quick-create success/failure, and autopilot monitor writes | `server/internal/inboxpolicy/policy.go:39-100`; `server/internal/service/autopilot.go:474-500`; `server/internal/service/task.go:3292-3321,3357-3383`; `server/cmd/server/autopilot_failure_monitor.go:236-265` |
+| Web Push rechecks `(workspace_id, recipient_id)` membership before preferences, subscriptions, or network delivery; removed members are silently suppressed and lookup errors fail closed | `server/internal/webpush/dispatcher.go:173-213` |
+| `SendTest` stays explicitly user-scoped and does not use the workspace membership gate | `server/internal/webpush/dispatcher.go` (search `func (d *Dispatcher) SendTest`) |
+| A subscribed direct-member target is excluded from `new_comment`, then receives the single `mentioned` row/event | `server/cmd/server/notification_listeners.go:854-868` |
+| Assignment dedup records only a successfully persisted direct notification, so a muted assignment cannot swallow an enabled member mention | `server/cmd/server/notification_listeners.go` (search `if notifyDirect` in `issue:created`) |
+| Notification preference API accepts only `inbox_mode=all|mentions_only`; event groups retain `all|muted` | `server/internal/handler/notification_preference.go:15-25,85-95` |
+| Historical rows are not updated or deleted when the preference changes; the upsert touches only `notification_preference` | `server/pkg/db/queries/notification_preference.sql:5-9` |
+
 ## Preview and suppression
 
 | Fact | Source |
@@ -108,15 +132,11 @@ a pointer.
 | Member mention uses `user_id`, confirmed by the backend roster formatter: `formatMention(user.Name, "member", userID)` where `userID = UUIDToString(m.MemberID)` | `server/internal/handler/squad_briefing.go:189-190` |
 | `formatMention` emits `[@<name>](mention://<type>/<id>)` | `server/internal/handler/squad_briefing.go:216-218` |
 
-## Explicit non-claim: no member-notification path in the Go comment handler
+## Handler/listener ownership boundary
 
-The skill deliberately does **not** assert that a `member` mention "sends a
-notification." `server/internal/handler/comment.go` has no notification
-delivery path for member (or issue) mentions: `computeMentionedAgentCommentTriggers`
-branches only on `squad` and `agent`
-(`server/internal/handler/comment.go:1397,1437-1439`), and a grep of the file for
-`notif` returns only an unrelated comment about avoiding "log spam" on
-unchanged threads — no member-notification call. The verified contract is
-narrow: a `member` or `issue` mention renders as a link and enqueues no agent
-run; only `agent` and `squad` mentions enqueue work. If a notification UX
-exists, it is not in this handler, so this skill makes no claim about it.
+`server/internal/handler/comment.go` still has no member-notification write; it
+only computes and enqueues agent work. Member Inbox delivery belongs to the
+`comment:created` listener in
+`server/cmd/server/notification_listeners.go:807-868`. This distinction matters:
+a `member` mention creates no agent run but can create a human Inbox signal,
+while an `issue` mention does neither.
