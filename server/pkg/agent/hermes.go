@@ -462,6 +462,10 @@ type hermesClient struct {
 	sessionID    string
 	onMessage    func(Message)
 	onPromptDone func(hermesPromptResult)
+	// onActivity observes accepted ACP session updates. Grok uses it to
+	// retain a short post-response drain window; other ACP backends leave it
+	// nil and keep their existing lifecycle behavior.
+	onActivity func()
 	// acceptNotification can drop ACP session updates before dispatching to
 	// handlers that mutate client state such as usage or pending tool calls.
 	acceptNotification func(updateType string) bool
@@ -773,6 +777,9 @@ func (c *hermesClient) handleNotification(raw map[string]json.RawMessage) {
 	updateType, updateData := normalizeACPUpdate(params.Update)
 	if c.acceptNotification != nil && !c.acceptNotification(updateType) {
 		return
+	}
+	if c.onActivity != nil {
+		c.onActivity()
 	}
 
 	switch updateType {
