@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,6 +24,8 @@ const (
 	maxDeliveryFieldRunes   = 2_000
 	maxDeliveryCommandRunes = 1_000
 )
+
+const firstVerifiedDeliveryCLIVersion = 7
 
 type issueDeliveryLocalVerification struct {
 	Command string `json:"command"`
@@ -59,6 +62,54 @@ type issueDeliveryResponse struct {
 	Comment      CommentResponse      `json:"comment"`
 	Verification issueDeliveryReceipt `json:"verification"`
 	Idempotent   bool                 `json:"idempotent"`
+}
+
+func (h *Handler) verifiedDeliveryRequiredForTask(r *http.Request, actorType string) bool {
+	if !h.cfg.VerifiedDeliveryRequired || actorType != "agent" {
+		return false
+	}
+	taskID, err := util.ParseUUID(strings.TrimSpace(r.Header.Get("X-Task-ID")))
+	if err != nil {
+		return false
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	if err != nil {
+		return false
+	}
+	runtime, err := h.Queries.GetAgentRuntime(r.Context(), task.RuntimeID)
+	if err != nil {
+		return false
+	}
+	var metadata struct {
+		CLIVersion string `json:"cli_version"`
+	}
+	if err := json.Unmarshal(runtime.Metadata, &metadata); err != nil {
+		return false
+	}
+	return supportsVerifiedDeliveryCLI(metadata.CLIVersion)
+}
+
+func supportsVerifiedDeliveryCLI(version string) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	parts := strings.SplitN(version, "-runmux.", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	core := strings.Split(parts[0], ".")
+	if len(core) != 3 {
+		return false
+	}
+	major, majorErr := strconv.Atoi(core[0])
+	minor, minorErr := strconv.Atoi(core[1])
+	patch, patchErr := strconv.Atoi(core[2])
+	revision, revisionErr := strconv.Atoi(parts[1])
+	if majorErr != nil || minorErr != nil || patchErr != nil || revisionErr != nil {
+		return false
+	}
+	if major != 0 || minor != 3 || patch != 43 {
+		return major > 0 || minor > 3 || (minor == 3 && patch > 43)
+	}
+	return revision >= firstVerifiedDeliveryCLIVersion
 }
 
 // DeliverIssue atomically posts the Agent result, stores bounded verification

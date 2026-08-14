@@ -113,18 +113,55 @@ func TestAgentInReviewRequiresDeliveryOnlyWhenRolloutEnabled(t *testing.T) {
 	testHandler.cfg.VerifiedDeliveryRequired = true
 	t.Cleanup(func() { testHandler.cfg.VerifiedDeliveryRequired = previous })
 
-	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"})
-	req = withURLParam(req, "id", issueID)
-	req.Header.Set("X-Actor-Source", "task_token")
-	req.Header.Set("X-Agent-ID", agentID)
-	req.Header.Set("X-Task-ID", taskID)
-	w := httptest.NewRecorder()
-	testHandler.UpdateIssue(w, req)
+	updateStatus := func() *httptest.ResponseRecorder {
+		t.Helper()
+		req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"})
+		req = withURLParam(req, "id", issueID)
+		req.Header.Set("X-Actor-Source", "task_token")
+		req.Header.Set("X-Agent-ID", agentID)
+		req.Header.Set("X-Task-ID", taskID)
+		w := httptest.NewRecorder()
+		testHandler.UpdateIssue(w, req)
+		return w
+	}
+
+	w := updateStatus()
+	if w.Code != http.StatusOK {
+		t.Fatalf("legacy runtime should retain compatibility, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := testPool.Exec(t.Context(), `UPDATE issue SET status = 'in_progress' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("reset issue status: %v", err)
+	}
+	if _, err := testPool.Exec(t.Context(), `
+		UPDATE agent_runtime
+		SET metadata = jsonb_set(metadata, '{cli_version}', '"v0.3.43-runmux.7"')
+		WHERE id = (SELECT runtime_id FROM agent_task_queue WHERE id = $1)
+	`, taskID); err != nil {
+		t.Fatalf("mark runtime delivery-capable: %v", err)
+	}
+
+	w = updateStatus()
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
 	}
 	var status string
 	if err := testPool.QueryRow(t.Context(), `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil || status != "in_progress" {
 		t.Fatalf("generic gate mutated status=%q err=%v", status, err)
+	}
+}
+
+func TestSupportsVerifiedDeliveryCLI(t *testing.T) {
+	tests := map[string]bool{
+		"v0.3.43-runmux.6": false,
+		"v0.3.43-runmux.7": true,
+		"v0.3.43-runmux.8": true,
+		"v0.3.44-runmux.1": true,
+		"0.4.0":            false,
+		"dev":              false,
+	}
+	for version, want := range tests {
+		if got := supportsVerifiedDeliveryCLI(version); got != want {
+			t.Errorf("supportsVerifiedDeliveryCLI(%q) = %v, want %v", version, got, want)
+		}
 	}
 }
