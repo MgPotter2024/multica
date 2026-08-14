@@ -148,6 +148,12 @@ string|number|bool` to force a type.
 
 ## Status changes have server side effects
 
+Assignment-mode Agents finish with `multica issue deliver`, not a separate result comment plus
+`issue status ... in_review`. Delivery requires the running task to own the current assignee,
+creates exactly one result comment, records bounded local verification and customer-path evidence,
+and enters `in_review` in one transaction. Humans retain the generic status controls. Reply-mode
+Agents remain comment-only unless their trigger explicitly grants ownership.
+
 A status change is not cosmetic — the server enqueues or skips agent work based
 on it. These are the contracts, not advice:
 

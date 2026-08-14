@@ -2432,6 +2432,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if h.cfg.VerifiedDeliveryRequired && req.Status != nil && *req.Status == "in_review" && actorType == "agent" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"code":  "delivery_verification_required",
+			"error": "Agents must use `multica issue deliver <issue-id> --content-file <path> ...` to enter in_review",
+		})
+		return
+	}
 
 	// Track which fields were explicitly present in JSON (even if null)
 	var rawFields map[string]json.RawMessage
@@ -2993,6 +3000,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorType, _ := h.resolveActor(r, userID, workspaceID)
+	if h.cfg.VerifiedDeliveryRequired && req.Updates.Status != nil && *req.Updates.Status == "in_review" && actorType == "agent" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"code":  "delivery_verification_required",
+			"error": "Agents must use `multica issue deliver` one issue at a time to enter in_review",
+		})
+		return
+	}
 	if req.Updates.Status != nil {
 		if err := issuepolicy.ValidateStatus(actorType, *req.Updates.Status); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())

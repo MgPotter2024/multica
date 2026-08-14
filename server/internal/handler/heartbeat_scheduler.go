@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -50,6 +52,9 @@ func NewPassthroughHeartbeatScheduler(queries *db.Queries) *PassthroughHeartbeat
 }
 
 func (p *PassthroughHeartbeatScheduler) Schedule(ctx context.Context, rt db.AgentRuntime) error {
+	if rt.Status == "disabled" {
+		return nil
+	}
 	if rt.Status == "online" && rt.LastSeenAt.Valid {
 		rows, err := p.queries.TouchAgentRuntimeLastSeen(ctx, rt.ID)
 		if err != nil {
@@ -62,6 +67,12 @@ func (p *PassthroughHeartbeatScheduler) Schedule(ctx context.Context, rt db.Agen
 		// Fall through to MarkAgentRuntimeOnline to flip the row back.
 	}
 	_, err := p.queries.MarkAgentRuntimeOnline(ctx, rt.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		current, loadErr := p.queries.GetAgentRuntime(ctx, rt.ID)
+		if loadErr == nil && current.Status == "disabled" {
+			return nil
+		}
+	}
 	return err
 }
 

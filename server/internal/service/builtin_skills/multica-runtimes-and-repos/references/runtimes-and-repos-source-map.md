@@ -1,6 +1,8 @@
 # Runtimes and repos source map
 
-- `server/cmd/multica/cmd_runtime.go` registers `runtime list`, `usage`, `activity`, `update`, and `delete`.
+- `server/cmd/multica/cmd_runtime.go` registers `runtime list`, `usage`, `activity`, `update`, `disable`, `enable`, and `delete`.
+- Runtime disable/enable use the dedicated routes in `server/cmd/server/router.go`; `server/internal/handler/runtime_availability.go` locks the runtime, persists intent, cancels active tasks, revokes their task tokens, and verifies the drain in one transaction.
+- Registration and heartbeat preservation live in `server/pkg/db/queries/runtime.sql` and `server/internal/handler/heartbeat_scheduler.go`; task insert/claim/start fences live in the task queries under `server/pkg/db/queries/`.
 - `runtime list` reads `/api/runtimes` and prints `id`, `name`, `runtime_mode`, `provider`, `status`, and `last_seen_at`.
 - `runtime update` posts to `/api/runtimes/{runtime-id}/update`; with `--wait` it polls update status.
 - `runtime delete` deletes `/api/runtimes/{runtime-id}`; with `--cascade`, it first reads the `runtime_has_active_agents` conflict payload and posts those ids to `/api/runtimes/{runtime-id}/archive-agents-and-delete`.

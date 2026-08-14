@@ -93,6 +93,10 @@
     "about_to_gc": {
       "label": "About to GC",
       "description": "Offline 6+ days. Auto-deleted at 7 days unless it reconnects."
+    },
+    "disabled": {
+      "label": "Disabled",
+      "description": "Administratively disabled. Tasks cannot be queued or claimed until it is enabled."
     }
   },
   "detail": {

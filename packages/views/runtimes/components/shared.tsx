@@ -1,4 +1,4 @@
-import { Cloud, Monitor, Wifi, WifiHigh, WifiOff } from "lucide-react";
+import { Cloud, Monitor, PowerOff, Wifi, WifiHigh, WifiOff } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
 import type { RuntimeHealth } from "@multica/core/runtimes";
 import { ProviderLogo } from "./provider-logo";
@@ -34,6 +34,7 @@ const HEALTH_VISUAL: Record<RuntimeHealth, { dot: string; tone: string }> = {
   recently_lost: { dot: "bg-warning", tone: "bg-warning/10 text-warning" },
   offline: { dot: "bg-muted-foreground/40", tone: "bg-muted text-muted-foreground" },
   about_to_gc: { dot: "bg-destructive", tone: "bg-destructive/10 text-destructive" },
+  disabled: { dot: "bg-destructive", tone: "bg-destructive/10 text-destructive" },
 };
 
 export function HealthDot({
@@ -74,6 +75,7 @@ const HEALTH_ICON: Record<
   recently_lost: { Icon: WifiHigh, tone: "text-warning" },
   offline: { Icon: WifiOff, tone: "text-muted-foreground" },
   about_to_gc: { Icon: WifiOff, tone: "text-destructive" },
+  disabled: { Icon: PowerOff, tone: "text-destructive" },
 };
 
 export function HealthIcon({
@@ -98,6 +100,7 @@ const HEALTH_LABEL_EN: Record<RuntimeHealth, string> = {
   recently_lost: "Recently lost",
   offline: "Offline",
   about_to_gc: "About to GC",
+  disabled: "Disabled",
 };
 
 export function healthLabel(health: RuntimeHealth | "loading"): string {

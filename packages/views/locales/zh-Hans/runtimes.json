@@ -89,6 +89,10 @@
     "about_to_gc": {
       "label": "即将清理",
       "description": "离线 6 天以上。如不重连，将在 7 天时自动删除。"
+    },
+    "disabled": {
+      "label": "已禁用",
+      "description": "已由管理员停用。重新启用前无法排队或领取任务。"
     }
   },
   "detail": {

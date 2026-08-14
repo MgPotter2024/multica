@@ -621,7 +621,7 @@ export const RuntimeSchema: z.ZodType<RuntimeDevice> = z.object({
   // The two fields presence derivation actually reads. Status defaults to
   // "offline" — a runtime row with an unparseable status is treated as
   // unreachable, which is the safe degrade for the dot.
-  status: z.enum(["online", "offline"]).catch("offline"),
+  status: z.enum(["online", "offline", "disabled"]).catch("offline"),
   last_seen_at: z.string().nullable().default(null),
   device_info: z.string().default(""),
   metadata: z.record(z.string(), z.unknown()).default({}),

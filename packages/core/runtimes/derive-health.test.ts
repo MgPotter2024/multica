@@ -26,6 +26,12 @@ function makeRuntime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
 }
 
 describe("deriveRuntimeHealth", () => {
+  it("preserves disabled as explicit administrative intent", () => {
+    expect(
+      deriveRuntimeHealth(makeRuntime({ status: "disabled", last_seen_at: null }), FIXED_NOW),
+    ).toBe("disabled");
+  });
+
   it("returns online when status is online (regardless of last_seen_at)", () => {
     expect(
       deriveRuntimeHealth(makeRuntime({ status: "online", last_seen_at: null }), FIXED_NOW),

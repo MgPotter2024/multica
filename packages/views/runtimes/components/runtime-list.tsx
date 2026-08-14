@@ -307,7 +307,8 @@ function HealthCell({
   }
 
   const health = deriveRuntimeHealth(runtime, now);
-  const offline = health === "offline" || health === "about_to_gc";
+  const offline =
+    health === "offline" || health === "about_to_gc" || health === "disabled";
   const lastSeen = formatLastSeen(runtime.last_seen_at);
   const active = workload.runningCount + workload.queuedCount;
 

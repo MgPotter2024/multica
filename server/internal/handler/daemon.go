@@ -1104,6 +1104,10 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		RuntimeID: runtimeID,
 		Status:    "ok",
 	}
+	if rt.Status == "disabled" {
+		ack.Status = "disabled"
+		return ack, m, nil
+	}
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
 	hasUpdate, probeUpdateErr := h.UpdateStore.HasPending(probeUpdateCtx, runtimeID)

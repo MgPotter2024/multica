@@ -65,6 +65,9 @@ type Config struct {
 	// invitation only. The public /api/config endpoint mirrors this flag so
 	// the UI can hide every "Create workspace" affordance — see #3433.
 	DisableWorkspaceCreation bool
+	// VerifiedDeliveryRequired is enabled after active runtimes have upgraded
+	// to a CLI that supports `issue deliver`, avoiding a mixed-version outage.
+	VerifiedDeliveryRequired bool
 	// PublicURL is the absolute base URL the API is reachable at from the
 	// public internet, with no trailing slash (e.g. "https://app.multica.ai").
 	// Used only to build webhook_url responses for autopilot webhook triggers
