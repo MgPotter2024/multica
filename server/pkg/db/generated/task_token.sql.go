@@ -67,6 +67,15 @@ func (q *Queries) DeleteTaskTokensByTask(ctx context.Context, taskID pgtype.UUID
 	return err
 }
 
+const deleteTaskTokensByTasks = `-- name: DeleteTaskTokensByTasks :exec
+DELETE FROM task_token WHERE task_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteTaskTokensByTasks(ctx context.Context, taskIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteTaskTokensByTasks, taskIds)
+	return err
+}
+
 const getTaskTokenByHash = `-- name: GetTaskTokenByHash :one
 SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at FROM task_token
 WHERE token_hash = $1 AND expires_at > now()

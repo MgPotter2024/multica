@@ -6,6 +6,13 @@ after the latest `main` merge; the prior skill cited pre-merge lines that have
 since moved (see the "drifted" column). Re-confirm with the verification command
 at the bottom before relying on an exact line.
 
+## Verified Agent delivery
+
+- `server/cmd/multica/cmd_issue_delivery.go` registers `issue deliver` and requires a workspace-local UTF-8 result file plus local/customer-path evidence.
+- `server/internal/handler/issue_delivery.go` authorizes the running Agent task against the current issue assignee and performs the comment, receipt, and `in_review` transition atomically.
+- `server/migrations/181_issue_delivery_verification.up.sql` stores the server-attributed receipt outside the generic issue metadata bag.
+- `server/internal/handler/issue.go` rejects generic Agent `in_review` mutations when `MULTICA_VERIFIED_DELIVERY_REQUIRED=true`; human status updates remain unchanged.
+
 ## `multica issue pull-requests` — read PR links from Multica
 
 | Behavior | File:line | Drifted from |

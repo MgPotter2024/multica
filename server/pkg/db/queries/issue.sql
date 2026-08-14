@@ -69,6 +69,24 @@ WHERE id = $1;
 SELECT * FROM issue
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: LockIssueForDelivery :one
+SELECT * FROM issue
+WHERE id = @id AND workspace_id = @workspace_id
+FOR UPDATE;
+
+-- name: GetIssueDeliveryVerificationForTask :one
+SELECT receipt FROM issue_delivery_verification
+WHERE workspace_id = @workspace_id
+  AND issue_id = @issue_id
+  AND task_id = @task_id;
+
+-- name: CreateIssueDeliveryVerification :one
+INSERT INTO issue_delivery_verification (
+    task_id, issue_id, workspace_id, agent_id, comment_id, receipt
+)
+VALUES (@task_id, @issue_id, @workspace_id, @agent_id, @comment_id, @receipt)
+RETURNING *;
+
 -- name: CreateIssue :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,

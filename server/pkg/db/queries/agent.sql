@@ -172,7 +172,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, runtime_mcp_overlay, runtime_connected_apps
 )
-VALUES (
+SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
     COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
     sqlc.narg(trigger_summary),
@@ -188,6 +188,9 @@ VALUES (
     sqlc.narg(originator_user_id),
     sqlc.narg(runtime_mcp_overlay),
     sqlc.narg(runtime_connected_apps)
+WHERE EXISTS (
+    SELECT 1 FROM agent_runtime runtime
+    WHERE runtime.id = $2 AND runtime.status <> 'disabled'
 )
 RETURNING *;
 
@@ -199,11 +202,14 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, context, originator_user_id,
     runtime_mcp_overlay, runtime_connected_apps
 )
-VALUES (
+SELECT
     $1, $2, NULL, 'queued', $3, $4,
     sqlc.narg(originator_user_id),
     sqlc.narg(runtime_mcp_overlay),
     sqlc.narg(runtime_connected_apps)
+WHERE EXISTS (
+    SELECT 1 FROM agent_runtime runtime
+    WHERE runtime.id = $2 AND runtime.status <> 'disabled'
 )
 RETURNING *;
 
@@ -215,7 +221,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     trigger_summary, is_leader_task, squad_id, escalation_for_task_id, fire_at
 )
-VALUES (
+SELECT
     @agent_id, @runtime_id, @issue_id, 'deferred', @priority,
     sqlc.narg(trigger_comment_id),
     sqlc.narg(trigger_summary),
@@ -223,6 +229,9 @@ VALUES (
     sqlc.narg(squad_id),
     @escalation_for_task_id,
     @fire_at
+WHERE EXISTS (
+    SELECT 1 FROM agent_runtime runtime
+    WHERE runtime.id = @runtime_id AND runtime.status <> 'disabled'
 )
 RETURNING *;
 
@@ -294,6 +303,10 @@ SELECT
     p.chat_input_task_id
 FROM agent_task_queue p
 WHERE p.id = $1
+  AND EXISTS (
+      SELECT 1 FROM agent_runtime runtime
+      WHERE runtime.id = p.runtime_id AND runtime.status <> 'disabled'
+  )
 RETURNING *;
 
 -- name: CancelAgentTasksByIssue :many
@@ -383,6 +396,10 @@ SET status = 'dispatched',
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = $1 AND atq.status = 'queued'
+      AND EXISTS (
+          SELECT 1 FROM agent_runtime runtime
+          WHERE runtime.id = atq.runtime_id AND runtime.status = 'online'
+      )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -462,6 +479,10 @@ WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.runtime_id = $1
       AND atq.status = 'dispatched'
+      AND EXISTS (
+          SELECT 1 FROM agent_runtime runtime
+          WHERE runtime.id = atq.runtime_id AND runtime.status = 'online'
+      )
       AND atq.started_at IS NULL
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
@@ -496,7 +517,12 @@ SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
+WHERE agent_task_queue.id = $1
+  AND agent_task_queue.status IN ('dispatched', 'waiting_local_directory')
+  AND EXISTS (
+      SELECT 1 FROM agent_runtime runtime
+      WHERE runtime.id = agent_task_queue.runtime_id AND runtime.status = 'online'
+  )
 RETURNING *;
 
 -- name: MarkAgentTaskWaitingLocalDirectory :one
@@ -897,7 +923,12 @@ ORDER BY priority DESC, created_at ASC;
 -- runtime is busy on a long-running task. Backed by the partial index
 -- idx_agent_task_queue_claim_candidates so the warm path is cheap.
 SELECT * FROM agent_task_queue
-WHERE runtime_id = $1 AND status = 'queued'
+WHERE runtime_id = $1
+  AND status = 'queued'
+  AND EXISTS (
+      SELECT 1 FROM agent_runtime runtime
+      WHERE runtime.id = agent_task_queue.runtime_id AND runtime.status = 'online'
+  )
 ORDER BY priority DESC, created_at ASC;
 
 -- name: PromoteDueDeferredTasksForRuntime :many
@@ -906,7 +937,16 @@ SET status = 'queued'
 WHERE runtime_id = @runtime_id
   AND status = 'deferred'
   AND fire_at <= now()
+  AND EXISTS (
+      SELECT 1 FROM agent_runtime runtime
+      WHERE runtime.id = agent_task_queue.runtime_id AND runtime.status = 'online'
+  )
 RETURNING *;
+
+-- name: LockAgentTaskForDelivery :one
+SELECT * FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE;
 
 -- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue

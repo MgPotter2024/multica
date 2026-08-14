@@ -333,7 +333,11 @@ ORDER BY t.id;
 
 -- name: CreateAutopilotTask :one
 INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, autopilot_run_id, trigger_summary)
-VALUES ($1, $2, NULL, 'queued', $3, $4, sqlc.narg(trigger_summary))
+SELECT $1, $2, NULL, 'queued', $3, $4, sqlc.narg(trigger_summary)
+WHERE EXISTS (
+    SELECT 1 FROM agent_runtime runtime
+    WHERE runtime.id = $2 AND runtime.status <> 'disabled'
+)
 RETURNING *;
 
 -- =====================

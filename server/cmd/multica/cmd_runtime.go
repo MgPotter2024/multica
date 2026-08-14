@@ -67,6 +67,20 @@ var runtimeDeleteCmd = &cobra.Command{
 	RunE: runRuntimeDelete,
 }
 
+var runtimeDisableCmd = &cobra.Command{
+	Use:   "disable <runtime-id>",
+	Short: "Disable a runtime and cancel its active tasks",
+	Args:  exactArgs(1),
+	RunE:  runRuntimeDisable,
+}
+
+var runtimeEnableCmd = &cobra.Command{
+	Use:   "enable <runtime-id>",
+	Short: "Enable a runtime; a fresh heartbeat is required before use",
+	Args:  exactArgs(1),
+	RunE:  runRuntimeEnable,
+}
+
 func init() {
 	runtimeCmd.AddCommand(runtimeListCmd)
 	runtimeCmd.AddCommand(runtimeUsageCmd)
@@ -74,6 +88,8 @@ func init() {
 	runtimeCmd.AddCommand(runtimeUpdateCmd)
 	runtimeCmd.AddCommand(runtimeRenameCmd)
 	runtimeCmd.AddCommand(runtimeDeleteCmd)
+	runtimeCmd.AddCommand(runtimeDisableCmd)
+	runtimeCmd.AddCommand(runtimeEnableCmd)
 
 	// runtime list
 	runtimeListCmd.Flags().String("output", "table", "Output format: table or json")
@@ -97,6 +113,8 @@ func init() {
 	// runtime delete
 	runtimeDeleteCmd.Flags().Bool("cascade", false, "Archive active agents bound to the runtime, cancel their tasks, then delete the runtime")
 	runtimeDeleteCmd.Flags().String("output", "table", "Output format: table or json")
+	runtimeDisableCmd.Flags().String("output", "json", "Output format: table or json")
+	runtimeEnableCmd.Flags().String("output", "json", "Output format: table or json")
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +270,42 @@ func runRuntimeDelete(cmd *cobra.Command, args []string) error {
 	result["id"] = runtimeID
 	result["deleted"] = true
 	return printRuntimeDeleteResult(cmd, result)
+}
+
+func runRuntimeDisable(cmd *cobra.Command, args []string) error {
+	return runRuntimeAvailability(cmd, args[0], "disable")
+}
+
+func runRuntimeEnable(cmd *cobra.Command, args []string) error {
+	return runRuntimeAvailability(cmd, args[0], "enable")
+}
+
+func runRuntimeAvailability(cmd *cobra.Command, runtimeID, action string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/runtimes/"+runtimeID+"/"+action, map[string]any{}, &result); err != nil {
+		return fmt.Errorf("%s runtime: %w", action, err)
+	}
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+	runtime, _ := result["runtime"].(map[string]any)
+	status := strVal(runtime, "status")
+	if action == "disable" {
+		fmt.Fprintf(os.Stderr, "Runtime disabled; %v active task(s) cancelled.\n", result["cancelled_task_count"])
+	} else if status == "offline" {
+		fmt.Fprintln(os.Stderr, "Runtime enabled with status \"offline\"; waiting for a fresh heartbeat.")
+	} else {
+		fmt.Fprintf(os.Stderr, "Runtime already enabled with status %q.\n", status)
+	}
+	return nil
 }
 
 func runRuntimeRename(cmd *cobra.Command, args []string) error {

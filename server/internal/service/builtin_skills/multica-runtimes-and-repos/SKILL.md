@@ -40,12 +40,14 @@ multica runtime list --output json
 multica runtime usage <runtime-id> --output json
 multica runtime activity <runtime-id> --output json
 multica runtime update <runtime-id> --target-version <version> --output json
+multica runtime disable <runtime-id> --output json
+multica runtime enable <runtime-id> --output json
 multica runtime delete <runtime-id>
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 ```
 
-`runtime update` and `runtime delete` are writes. `runtime delete` removes a runtime registration; if active agents are still bound, it refuses unless the user explicitly passes `--cascade`, which archives those agents and cancels their queued/running tasks before deleting the runtime. `repo checkout` creates a git worktree in the task working directory.
+Runtime update/disable/enable/delete are writes. `runtime disable` is the durable retirement switch: it cancels non-terminal work, revokes its task credentials, survives registration and heartbeat, and blocks both enqueue and claim. `runtime enable` restores `offline`; a fresh heartbeat is required before claim. Disable a current task's own runtime from different active capacity because credential revocation is immediate. `runtime delete` removes a runtime registration; if active agents are still bound, it refuses unless the user explicitly passes `--cascade`, which archives those agents and cancels their queued/running tasks before deleting the runtime. `repo checkout` creates a git worktree in the task working directory.
 
 `repo checkout` requires `MULTICA_DAEMON_PORT`; it is intended to run inside a daemon task. If absent, you are not in the normal agent checkout path. When a project `github_repo` resource has `resource_ref.ref`, `repo checkout <url>` uses that ref by default for the current task; an explicit `repo checkout <url> --ref <branch-or-sha>` overrides it.
 
@@ -56,7 +58,7 @@ Check in this order:
 1. Was a task supposed to be created? Inspect issue/comment/autopilot context.
 2. Is the assignee an agent or squad? A squad routes to its leader.
 3. Is the agent archived or bound to a runtime the actor cannot use?
-4. Is the runtime online? `multica runtime list --output json`.
+4. Is the runtime online, transiently offline, or deliberately disabled? `multica runtime list --output json`. A heartbeat never authorizes revival of disabled capacity.
 5. Did the daemon heartbeat recently? Runtime `last_seen_at` is the visible clue.
 6. Did the task get claimed or is it stuck pending/running/waiting for local directory?
 7. If repo checkout failed, classify it after checking whether repo context was

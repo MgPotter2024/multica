@@ -1542,12 +1542,13 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			}
 			s := string(data)
 
-			// The workflow must contain an explicit `multica issue comment add`
-			// invocation for this issue — not just a prose mention of posting.
-			mustContain := []string{
-				"multica issue comment add issue-1",
-				"mandatory",
+			command := "multica issue comment add issue-1"
+			outputWarning := "Final results MUST be delivered via `multica issue comment add`"
+			if tc.name == "assignment-triggered" {
+				command = "multica issue deliver issue-1"
+				outputWarning = "Final results MUST be delivered via `multica issue deliver`"
 			}
+			mustContain := []string{command, "mandatory"}
 			for _, want := range mustContain {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s: CLAUDE.md missing %q\n---\n%s", tc.name, want, s)
@@ -1558,7 +1559,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			// output is not user-visible. This is the second line of defense
 			// in case the agent skips past the workflow steps.
 			for _, want := range []string{
-				"Final results MUST be delivered via `multica issue comment add`",
+				outputWarning,
 				"does NOT see your terminal output",
 			} {
 				if !strings.Contains(s, want) {

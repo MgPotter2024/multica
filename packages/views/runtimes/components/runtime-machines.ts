@@ -66,6 +66,7 @@ const HEALTH_SEVERITY: Record<RuntimeHealth, number> = {
   recently_lost: 1,
   offline: 2,
   about_to_gc: 3,
+  disabled: 4,
 };
 
 export function splitRuntimeName(name: string): {

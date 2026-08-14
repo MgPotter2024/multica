@@ -68,7 +68,7 @@ export interface RuntimeDevice {
   runtime_mode: AgentRuntimeMode;
   provider: string;
   launch_header: string;
-  status: "online" | "offline";
+  status: "online" | "offline" | "disabled";
   device_info: string;
   metadata: Record<string, unknown>;
   owner_id: string | null;

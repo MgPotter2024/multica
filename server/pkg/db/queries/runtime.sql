@@ -53,7 +53,7 @@ ON CONFLICT (workspace_id, daemon_id, provider) WHERE profile_id IS NULL
 DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
-    status = EXCLUDED.status,
+    status = CASE WHEN agent_runtime.status = 'disabled' THEN 'disabled' ELSE EXCLUDED.status END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
@@ -87,7 +87,7 @@ DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
     provider = EXCLUDED.provider,
-    status = EXCLUDED.status,
+    status = CASE WHEN agent_runtime.status = 'disabled' THEN 'disabled' ELSE EXCLUDED.status END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
@@ -181,7 +181,20 @@ WHERE id = ANY(@ids::uuid[]) AND status = 'online';
 -- status flip is a real state change and we want updated_at to reflect it.
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
-WHERE id = $1
+WHERE id = $1 AND status <> 'disabled'
+RETURNING *;
+
+-- name: DisableAgentRuntime :one
+UPDATE agent_runtime
+SET status = 'disabled', updated_at = now()
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING *;
+
+-- name: EnableAgentRuntime :one
+UPDATE agent_runtime
+SET status = CASE WHEN status = 'disabled' THEN 'offline' ELSE status END,
+    updated_at = now()
+WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
 -- name: SetAgentRuntimeOffline :exec
@@ -264,10 +277,15 @@ RETURNING id, workspace_id, owner_id, daemon_id, provider;
 -- Returns the affected rows so the caller can broadcast task:cancelled and
 -- reconcile per-agent status.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now()
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE (runtime_id = ANY(@runtime_ids::uuid[]) OR agent_id = ANY(@agent_ids::uuid[]))
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
+
+-- name: CountUndrainedTasksByRuntimeOrAgent :one
+SELECT count(*) FROM agent_task_queue
+WHERE (runtime_id = ANY(@runtime_ids::uuid[]) OR agent_id = ANY(@agent_ids::uuid[]))
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred');
 
 -- name: DeleteAgentRuntime :exec
 DELETE FROM agent_runtime WHERE id = $1;

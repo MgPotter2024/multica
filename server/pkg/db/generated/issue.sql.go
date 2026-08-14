@@ -251,6 +251,45 @@ func (q *Queries) CreateIssue(ctx context.Context, arg CreateIssueParams) (Issue
 	return i, err
 }
 
+const createIssueDeliveryVerification = `-- name: CreateIssueDeliveryVerification :one
+INSERT INTO issue_delivery_verification (
+    task_id, issue_id, workspace_id, agent_id, comment_id, receipt
+)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING task_id, issue_id, workspace_id, agent_id, comment_id, receipt, created_at
+`
+
+type CreateIssueDeliveryVerificationParams struct {
+	TaskID      pgtype.UUID `json:"task_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	CommentID   pgtype.UUID `json:"comment_id"`
+	Receipt     []byte      `json:"receipt"`
+}
+
+func (q *Queries) CreateIssueDeliveryVerification(ctx context.Context, arg CreateIssueDeliveryVerificationParams) (IssueDeliveryVerification, error) {
+	row := q.db.QueryRow(ctx, createIssueDeliveryVerification,
+		arg.TaskID,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.CommentID,
+		arg.Receipt,
+	)
+	var i IssueDeliveryVerification
+	err := row.Scan(
+		&i.TaskID,
+		&i.IssueID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.CommentID,
+		&i.Receipt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createIssueWithOrigin = `-- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,
@@ -658,6 +697,26 @@ func (q *Queries) GetIssueByOrigin(ctx context.Context, arg GetIssueByOriginPara
 		&i.Stage,
 	)
 	return i, err
+}
+
+const getIssueDeliveryVerificationForTask = `-- name: GetIssueDeliveryVerificationForTask :one
+SELECT receipt FROM issue_delivery_verification
+WHERE workspace_id = $1
+  AND issue_id = $2
+  AND task_id = $3
+`
+
+type GetIssueDeliveryVerificationForTaskParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+func (q *Queries) GetIssueDeliveryVerificationForTask(ctx context.Context, arg GetIssueDeliveryVerificationForTaskParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getIssueDeliveryVerificationForTask, arg.WorkspaceID, arg.IssueID, arg.TaskID)
+	var receipt []byte
+	err := row.Scan(&receipt)
+	return receipt, err
 }
 
 const getIssueInWorkspace = `-- name: GetIssueInWorkspace :one
@@ -1123,6 +1182,50 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 func (q *Queries) LockIssueDuplicateKey(ctx context.Context, dollar_1 string) error {
 	_, err := q.db.Exec(ctx, lockIssueDuplicateKey, dollar_1)
 	return err
+}
+
+const lockIssueForDelivery = `-- name: LockIssueForDelivery :one
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage FROM issue
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockIssueForDeliveryParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) LockIssueForDelivery(ctx context.Context, arg LockIssueForDeliveryParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, lockIssueForDelivery, arg.ID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+	)
+	return i, err
 }
 
 const markIssueFirstExecuted = `-- name: MarkIssueFirstExecuted :one

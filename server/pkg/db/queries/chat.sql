@@ -193,12 +193,15 @@ INSERT INTO agent_task_queue (
     initiator_user_id, originator_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps
 )
-VALUES (
+SELECT
     $1, $2, NULL, 'queued', $3, $4, $5,
     sqlc.narg(originator_user_id),
     COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
     sqlc.narg(runtime_mcp_overlay),
     sqlc.narg(runtime_connected_apps)
+WHERE EXISTS (
+    SELECT 1 FROM agent_runtime runtime
+    WHERE runtime.id = $2 AND runtime.status <> 'disabled'
 )
 RETURNING *;
 
