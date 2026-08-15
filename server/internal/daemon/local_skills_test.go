@@ -223,6 +223,35 @@ func TestListRuntimeLocalSkills_GrokUsesGROKHOME(t *testing.T) {
 	}
 }
 
+func TestLocalSkills_ZcodeUsesUniversalAgentsRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeTestLocalSkill(t, filepath.Join(home, ".agents", "skills"), "zcode-helper", map[string]string{
+		"SKILL.md": "---\nname: ZCode Helper\ndescription: Native ZCode skill\n---\n# ZCode Helper\n",
+		"notes.md": "notes",
+	})
+
+	skills, supported, err := listRuntimeLocalSkills("zcode")
+	if err != nil {
+		t.Fatalf("listRuntimeLocalSkills: %v", err)
+	}
+	if !supported || len(skills) != 1 {
+		t.Fatalf("zcode local skills = (supported=%t, skills=%v), want one skill", supported, skills)
+	}
+	if skills[0].Root != localSkillRootUniversal || skills[0].SourcePath != "~/.agents/skills/zcode-helper" {
+		t.Fatalf("zcode local skill = %+v, want universal .agents root", skills[0])
+	}
+
+	bundle, supported, err := loadRuntimeLocalSkillBundle("zcode", "zcode-helper")
+	if err != nil {
+		t.Fatalf("loadRuntimeLocalSkillBundle: %v", err)
+	}
+	if !supported || bundle.Name != "ZCode Helper" || len(bundle.Files) != 1 {
+		t.Fatalf("zcode imported bundle = (supported=%t, bundle=%+v)", supported, bundle)
+	}
+}
+
 // Skill installers (for example lark-cli) place every skill at a shared
 // location like ~/.agents/skills/<name> and symlink each one into the
 // runtime root (~/.claude/skills/<name>). The previous filepath.WalkDir

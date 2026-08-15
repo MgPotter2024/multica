@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,7 @@ type Config struct {
 	CLIVersion                     string                // multica CLI version (e.g. "0.1.13")
 	LaunchedBy                     string                // "desktop" when spawned by the Electron app, empty for standalone
 	Profile                        string                // profile name (empty = default)
-	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok
+	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok, zcode
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
 	KeepEnvAfterTask               bool                  // preserve env after task for debugging
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
@@ -317,8 +318,35 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if e, ok := probe("MULTICA_GROK_PATH", "grok", "MULTICA_GROK_MODEL"); ok {
 		agents["grok"] = e
 	}
+	// ZCode is Z.ai's official coding agent. Multica drives its private
+	// app-server protocol through the zcode-acp-server translation process.
+	// Require both layers so a bridge-only install is not advertised online.
+	if e, ok := probe("MULTICA_ZCODE_PATH", "zcode-acp-server", "MULTICA_ZCODE_MODEL"); ok {
+		zcodeBin := envOrDefault("ZCODE_BIN", "zcode")
+		resolvedZcode, err := resolveAgentExecutablePath(zcodeBin)
+		if err != nil && !strings.ContainsAny(zcodeBin, "/\\") {
+			resolvedZcode = getShellResolved()[zcodeBin]
+		}
+		_, zcodeBinExplicit := os.LookupEnv("ZCODE_BIN")
+		zcodeBinExplicit = zcodeBinExplicit && strings.TrimSpace(os.Getenv("ZCODE_BIN")) != ""
+		if resolvedZcode == "" && !zcodeBinExplicit && zcodeBin == "zcode" {
+			for _, p := range zcodeDesktopAppBundlePaths() {
+				if candidate, candidateErr := resolveAgentExecutablePath(p); candidateErr == nil {
+					resolvedZcode = candidate
+					break
+				}
+			}
+		}
+		if resolvedZcode != "" {
+			// Pin the exact official runtime path for both task execution and
+			// model discovery. The bridge reads ZCODE_BIN from its environment;
+			// without this, finding ZCode.app here would not help the child.
+			_ = os.Setenv("ZCODE_BIN", resolvedZcode)
+			agents["zcode"] = e
+		}
+	}
 	if len(agents) == 0 {
-		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor-agent, kimi, kiro-cli, agy, qodercli, traecli, or grok and ensure it is on PATH")
+		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor-agent, kimi, kiro-cli, agy, qodercli, traecli, grok, or zcode-acp-server and ensure it is on PATH")
 	}
 
 	claudeArgs, err := shellArgsFromEnv("MULTICA_CLAUDE_ARGS")
@@ -759,7 +787,7 @@ func isExecutableFile(path string) bool {
 // invocation, instead of paying the cost-per-miss.
 var defaultAgentCommandNames = []string{
 	"claude", "codex", "opencode", "openclaw", "hermes",
-	"pi", "cursor-agent", "copilot", "kimi", "kiro-cli", "codebuddy", "agy", "traecli", "grok",
+	"pi", "cursor-agent", "copilot", "kimi", "kiro-cli", "codebuddy", "agy", "traecli", "grok", "zcode-acp-server", "zcode",
 }
 
 var codexDesktopAppBundlePaths = func() []string {
@@ -768,6 +796,19 @@ var codexDesktopAppBundlePaths = func() []string {
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		paths = append(paths, filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"))
+	}
+	return paths
+}
+
+var zcodeDesktopAppBundlePaths = func() []string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	paths := []string{
+		"/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, "Applications", "ZCode.app", "Contents", "Resources", "glm", "zcode.cjs"))
 	}
 	return paths
 }

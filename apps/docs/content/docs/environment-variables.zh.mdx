@@ -186,6 +186,10 @@ API 返回的 `download_url` 在未配置 CloudFront 签名时会指向 `GET /ap
 | `MULTICA_<PROVIDER>_PATH` | 对应 CLI 名 | 各 AI 编程工具的可执行文件路径（如 `MULTICA_CLAUDE_PATH`）|
 | `MULTICA_<PROVIDER>_MODEL` | 空 | 各 AI 编程工具的默认模型 |
 | `MULTICA_<PROVIDER>_ARGS` | 空 | 守护进程级的默认 CLI 参数，作用于该后端的每个任务，并排在各智能体自身的 `custom_args` 之前。支持 `MULTICA_CLAUDE_ARGS`、`MULTICA_CODEX_ARGS`、`MULTICA_CODEBUDDY_ARGS` |
+| `MULTICA_ZCODE_PATH` | `zcode-acp-server` | ZCode ACP 适配层的可执行文件路径 |
+| `MULTICA_ZCODE_MODEL` | 空 | ZCode 适配层广播的精确模型 id（自定义 provider 例如 `multica-bigmodel\glm-5.2`）|
+| `ZCODE_BIN` | `zcode` 或自动发现的 ZCode.app 入口 | 传给 ACP 适配层的官方 ZCode CLI 路径 |
+| `ZCODE_NODE` | 由适配层自动发现 | 可选的 Node.js 可执行文件，用来启动 ZCode 自带的 `.cjs` 入口 |
 
 完整解释每个参数对守护进程行为的影响，见 [守护进程与运行时](/daemon-runtimes)。
 

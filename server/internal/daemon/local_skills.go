@@ -155,6 +155,12 @@ func localSkillRootsForProvider(provider string) ([]localSkillRoot, bool, error)
 			grokHome = filepath.Join(home, ".grok")
 		}
 		providerRoot = filepath.Join(grokHome, "skills")
+	case "zcode":
+		// ZCode and its ACP bridge use the cross-agent global skill root;
+		// there is no separate ZCode-specific user-level directory.
+		return []localSkillRoot{
+			{path: filepath.Join(home, ".agents", "skills"), kind: localSkillRootUniversal},
+		}, true, nil
 	default:
 		return nil, false, nil
 	}

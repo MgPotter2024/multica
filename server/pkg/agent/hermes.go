@@ -552,6 +552,24 @@ func (c *hermesClient) closeAllPending(err error) {
 	}
 }
 
+func (c *hermesClient) currentSessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionID
+}
+
+func (c *hermesClient) sendNotification(method string, params map[string]any) error {
+	data, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	})
+	if err != nil {
+		return err
+	}
+	return c.writeLine(append(data, '\n'))
+}
+
 func (c *hermesClient) handleLine(line string) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
@@ -603,17 +621,22 @@ func (c *hermesClient) handleAgentRequest(raw map[string]json.RawMessage) {
 	var resp map[string]any
 	switch method {
 	case "session/request_permission":
+		optionID, grant := offeredACPPermissionOption(raw["params"])
+		outcome := map[string]any{"outcome": "cancelled"}
+		if grant {
+			outcome = map[string]any{
+				"outcome":  "selected",
+				"optionId": optionID,
+			}
+		}
 		resp = map[string]any{
 			"jsonrpc": "2.0",
 			"id":      json.RawMessage(rawID),
 			"result": map[string]any{
-				"outcome": map[string]any{
-					"outcome":  "selected",
-					"optionId": "approve_for_session",
-				},
+				"outcome": outcome,
 			},
 		}
-		c.cfg.Logger.Debug("auto-approved agent permission request", "method", method)
+		c.cfg.Logger.Debug("handled agent permission request", "method", method, "granted", grant)
 	default:
 		// Unknown agent→client method — reply with standard "method
 		// not found" so the agent doesn't block waiting for us. Better
@@ -638,6 +661,67 @@ func (c *hermesClient) handleAgentRequest(raw map[string]json.RawMessage) {
 	if err := c.writeLine(data); err != nil {
 		c.cfg.Logger.Warn("write agent-request response", "method", method, "error", err)
 	}
+}
+
+// offeredACPPermissionOption chooses a recognized granting option the agent
+// actually advertised. ACP also encodes AskUserQuestion choices as
+// request_permission with arbitrary allow_once option ids, so kind alone is
+// insufficient: unknown option ids fail closed and the caller returns a
+// cancelled outcome rather than answering a user question autonomously.
+func offeredACPPermissionOption(raw json.RawMessage) (string, bool) {
+	var params struct {
+		Options []struct {
+			OptionID string `json:"optionId"`
+			Kind     string `json:"kind"`
+		} `json:"options"`
+		ToolCall struct {
+			RawInput json.RawMessage `json:"rawInput"`
+		} `json:"toolCall"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return "", false
+	}
+	// AskUserQuestion can carry questions in rawInput, or omit rawInput and use
+	// arbitrary option ids plus a __skip__ / <label>:yes / <label>:no shape.
+	var rawInput struct {
+		Questions json.RawMessage `json:"questions"`
+	}
+	if len(params.ToolCall.RawInput) > 0 && json.Unmarshal(params.ToolCall.RawInput, &rawInput) == nil && len(rawInput.Questions) > 0 {
+		return "", false
+	}
+	for _, option := range params.Options {
+		if option.OptionID == "__skip__" || strings.HasSuffix(option.OptionID, ":yes") || strings.HasSuffix(option.OptionID, ":no") {
+			return "", false
+		}
+	}
+	for _, preferred := range []struct {
+		kind string
+		ids  []string
+	}{
+		{kind: "allow_always", ids: []string{"approve_for_session", "allow_always", "allow_project"}},
+		{kind: "allow_once", ids: []string{"approve", "allow_once", "allow"}},
+	} {
+		for _, option := range params.Options {
+			if option.Kind != preferred.kind {
+				continue
+			}
+			for _, id := range preferred.ids {
+				if option.OptionID == id {
+					return option.OptionID, true
+				}
+			}
+		}
+	}
+	// Older ACP agents omitted kind. Recognize only established grant ids in
+	// that legacy shape rather than selecting arbitrary user-choice labels.
+	for _, preferred := range []string{"approve_for_session", "allow_always", "allow_project", "approve", "allow_once", "allow"} {
+		for _, option := range params.Options {
+			if option.Kind == "" && option.OptionID == preferred {
+				return option.OptionID, true
+			}
+		}
+	}
+	return "", false
 }
 
 // acpRPCError is a JSON-RPC error frame returned by the agent process.

@@ -120,6 +120,7 @@ var (
 		"cursor":        "cursor",
 		"gemini":        "gemini",
 		"grok":          "grok",
+		"zcode":         "zcode",
 		"hermes":        "hermes",
 		"kiro":          "kiro",
 		"kimi":          "kimi",
