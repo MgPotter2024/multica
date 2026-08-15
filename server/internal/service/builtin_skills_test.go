@@ -361,6 +361,7 @@ func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
 		"multica agent skills add <agent-id> --skill-ids <skill-id> --output json",
 		"multica agent skills list <agent-id> --output json",
 		"multica agent get <agent-id> --output json",
+		"the built-in `zcode` runtime currently rejects a non-empty",
 		"255",
 		"references/creating-agents-source-map.md",
 	}

@@ -379,6 +379,10 @@ func skillsDirPath(workDir, provider string) string {
 		// workspace skill layout; see https://antigravity.google/docs/gcli-migration
 		// under "Workspace skills".
 		return filepath.Join(workDir, ".agents", "skills")
+	case "zcode":
+		// ZCode and zcode-acp-server discover project-level skills from
+		// .agents/skills/ in the session workdir.
+		return filepath.Join(workDir, ".agents", "skills")
 	case "grok":
 		// Grok Build CLI discovers project-level skills from .grok/skills/
 		// (and also scans .agents/skills/). Prefer the native .grok tree.

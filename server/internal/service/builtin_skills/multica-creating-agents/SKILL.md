@@ -172,6 +172,11 @@ Two ways `mcp_config` differs from `custom_env`:
   field is `null` and `mcp_config_redacted` is `true`. Agent actors never see
   it, and a workspace may force redaction for everyone.
 
+Provider exception: the built-in `zcode` runtime currently rejects a non-empty
+`mcp_config` because the pinned ACP bridge does not forward client-managed MCP
+servers. Configure MCP in ZCode itself, or leave this field empty for a ZCode
+agent; the task fails visibly rather than silently dropping the configuration.
+
 ## Skill binding
 
 Creating an agent does NOT bind any workspace skill — binding is a separate

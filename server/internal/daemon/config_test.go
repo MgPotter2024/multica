@@ -697,6 +697,130 @@ func TestLoadConfig_CodexDesktopFallbackDoesNotOverrideExplicitPath(t *testing.T
 	}
 }
 
+func TestLoadConfig_UsesExplicitZcodeBridgeAndModel(t *testing.T) {
+	bridgePath := filepath.Join(t.TempDir(), "zcode-acp-server")
+	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake zcode bridge: %v", err)
+	}
+	zcodePath := filepath.Join(t.TempDir(), "zcode")
+	if err := os.WriteFile(zcodePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake zcode command: %v", err)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "fish"))
+	t.Setenv("MULTICA_DAEMON_ID", "11111111-1111-1111-1111-111111111111")
+	pinNonCodexAgentsToMissingPaths(t)
+	t.Setenv("MULTICA_CODEX_PATH", filepath.Join(t.TempDir(), "missing-codex"))
+	t.Setenv("MULTICA_ZCODE_PATH", bridgePath)
+	t.Setenv("MULTICA_ZCODE_MODEL", "glm-5.2")
+	t.Setenv("ZCODE_BIN", zcodePath)
+
+	cfg, err := LoadConfig(Overrides{
+		ServerURL:      "http://localhost:0",
+		WorkspacesRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got, ok := cfg.Agents["zcode"]
+	if !ok {
+		t.Fatalf("expected zcode agent, got %#v", cfg.Agents)
+	}
+	if got.Path != bridgePath {
+		t.Fatalf("zcode path = %q, want %q", got.Path, bridgePath)
+	}
+	if got.Model != "glm-5.2" {
+		t.Fatalf("zcode model = %q, want glm-5.2", got.Model)
+	}
+}
+
+func TestLoadConfig_UsesZcodeDesktopAppBundleFallback(t *testing.T) {
+	bridgePath := filepath.Join(t.TempDir(), "zcode-acp-server")
+	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake zcode bridge: %v", err)
+	}
+	fakeZcode := filepath.Join(t.TempDir(), "ZCode.app", "Contents", "Resources", "glm", "zcode.cjs")
+	if err := os.MkdirAll(filepath.Dir(fakeZcode), 0o755); err != nil {
+		t.Fatalf("mkdir fake ZCode bundle: %v", err)
+	}
+	if err := os.WriteFile(fakeZcode, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatalf("write fake ZCode bundle CLI: %v", err)
+	}
+
+	oldBundlePaths := zcodeDesktopAppBundlePaths
+	zcodeDesktopAppBundlePaths = func() []string { return []string{fakeZcode} }
+	t.Cleanup(func() { zcodeDesktopAppBundlePaths = oldBundlePaths })
+
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "fish"))
+	t.Setenv("ZCODE_BIN", "")
+	t.Setenv("MULTICA_DAEMON_ID", "11111111-1111-1111-1111-111111111111")
+	pinNonCodexAgentsToMissingPaths(t)
+	t.Setenv("MULTICA_CODEX_PATH", filepath.Join(t.TempDir(), "missing-codex"))
+	t.Setenv("MULTICA_ZCODE_PATH", bridgePath)
+
+	cfg, err := LoadConfig(Overrides{
+		ServerURL:      "http://localhost:0",
+		WorkspacesRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if _, ok := cfg.Agents["zcode"]; !ok {
+		t.Fatalf("expected zcode agent from Desktop app bundle fallback, got %#v", cfg.Agents)
+	}
+	if got := os.Getenv("ZCODE_BIN"); got != fakeZcode {
+		t.Fatalf("ZCODE_BIN = %q, want %q", got, fakeZcode)
+	}
+}
+
+func TestLoadConfig_UsesZcodeFromLoginShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell not available on Windows")
+	}
+	bridgePath := filepath.Join(t.TempDir(), "zcode-acp-server")
+	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake zcode bridge: %v", err)
+	}
+	binDir := t.TempDir()
+	fakeZcode := filepath.Join(binDir, "zcode")
+	if err := os.WriteFile(fakeZcode, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake zcode command: %v", err)
+	}
+	rc := filepath.Join(t.TempDir(), "sh.rc")
+	if err := os.WriteFile(rc, []byte("export PATH=\""+binDir+":$PATH\"\n"), 0o644); err != nil {
+		t.Fatalf("write shell rc: %v", err)
+	}
+
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv("ENV", rc)
+	t.Setenv("ZCODE_BIN", "")
+	t.Setenv("MULTICA_DAEMON_ID", "11111111-1111-1111-1111-111111111111")
+	pinNonCodexAgentsToMissingPaths(t)
+	t.Setenv("MULTICA_CODEX_PATH", filepath.Join(t.TempDir(), "missing-codex"))
+	t.Setenv("MULTICA_ZCODE_PATH", bridgePath)
+
+	cfg, err := LoadConfig(Overrides{
+		ServerURL:      "http://localhost:0",
+		WorkspacesRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if _, ok := cfg.Agents["zcode"]; !ok {
+		t.Fatalf("expected zcode agent from login shell, got %#v", cfg.Agents)
+	}
+	want, err := filepath.EvalSymlinks(fakeZcode)
+	if err != nil {
+		t.Fatalf("canonical fake zcode path: %v", err)
+	}
+	if got := os.Getenv("ZCODE_BIN"); got != want {
+		t.Fatalf("ZCODE_BIN = %q, want %q", got, want)
+	}
+}
+
 func pinNonCodexAgentsToMissingPaths(t *testing.T) {
 	t.Helper()
 	missingDir := t.TempDir()
@@ -711,6 +835,7 @@ func pinNonCodexAgentsToMissingPaths(t *testing.T) {
 		"MULTICA_KIMI_PATH",
 		"MULTICA_KIRO_PATH",
 		"MULTICA_GROK_PATH",
+		"MULTICA_ZCODE_PATH",
 	} {
 		t.Setenv(name, filepath.Join(missingDir, strings.ToLower(name)))
 	}

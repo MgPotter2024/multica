@@ -624,6 +624,56 @@ func TestHermesClientAutoApprovesPermissionRequest(t *testing.T) {
 	}
 }
 
+func TestOfferedACPPermissionOptionUsesZcodeAllowChoice(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{"options":[{"optionId":"allow_once","kind":"allow_once"},{"optionId":"allow_project","kind":"allow_always"},{"optionId":"deny","kind":"reject_once"}]}`)
+	got, grant := offeredACPPermissionOption(raw)
+	if got != "allow_project" || !grant {
+		t.Fatalf("offeredACPPermissionOption = (%q, %t), want (allow_project, true)", got, grant)
+	}
+}
+
+func TestHermesClientCancelsAskUserQuestion(t *testing.T) {
+	t.Parallel()
+
+	w := &bufferWriter{}
+	c := &hermesClient{
+		cfg:     Config{Logger: slog.Default()},
+		stdin:   w,
+		pending: make(map[int]*pendingRPC),
+	}
+	c.handleLine(`{"jsonrpc":"2.0","id":43,"method":"session/request_permission","params":{"sessionId":"ses_1","options":[{"optionId":"React","name":"React","kind":"allow_once"},{"optionId":"Vue","name":"Vue","kind":"allow_once"},{"optionId":"__skip__","name":"Skip","kind":"reject_once"}],"toolCall":{"toolCallId":"tc_ask"}}}`)
+
+	var resp struct {
+		Result struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(w.String())), &resp); err != nil {
+		t.Fatalf("reply is not valid JSON: %v", err)
+	}
+	if resp.Result.Outcome.Outcome != "cancelled" || resp.Result.Outcome.OptionID != "" {
+		t.Fatalf("AskUserQuestion outcome = (%q, %q), want cancelled with no answer", resp.Result.Outcome.Outcome, resp.Result.Outcome.OptionID)
+	}
+}
+
+func TestOfferedACPPermissionOptionRejectsUnknownAllowChoice(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"options":[{"optionId":"React","kind":"allow_once"},{"optionId":"Vue","kind":"allow_once"}]}`),
+		json.RawMessage(`not-json`),
+	} {
+		if got, grant := offeredACPPermissionOption(raw); got != "" || grant {
+			t.Fatalf("offeredACPPermissionOption(%s) = (%q, %t), want no grant", raw, got, grant)
+		}
+	}
+}
+
 // TestHermesClientReplesMethodNotFoundForUnknownAgentRequest ensures
 // that any agent → client request we don't explicitly handle gets a
 // proper JSON-RPC error back, not silence. Silence would block the

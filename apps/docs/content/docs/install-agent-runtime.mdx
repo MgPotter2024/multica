@@ -1,11 +1,11 @@
 ---
 title: Install an agent runtime
-description: Multica drives whichever AI coding tools you have on your machine. This page shows you how to install each of the 15 supported tools so the daemon can detect them.
+description: Multica drives whichever AI coding tools you have on your machine. This page shows you how to install each of the 16 supported tools so the daemon can detect them.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-A **runtime** in Multica is the daemon on your machine paired with one AI coding tool the daemon found on your `PATH`. If the onboarding "Connect a runtime" step shows **No supported tools detected**, it means the daemon scanned `PATH` and didn't find any of the 15 tools it knows how to drive. Install one (or several) of the tools below, then come back to the step and re-scan — the runtime will show up within a few seconds.
+A **runtime** in Multica is the daemon on your machine paired with one AI coding tool the daemon found on your `PATH`. If the onboarding "Connect a runtime" step shows **No supported tools detected**, it means the daemon scanned `PATH` and didn't find any of the 16 tools it knows how to drive. Install one (or several) of the tools below, then come back to the step and re-scan — the runtime will show up within a few seconds.
 
 This page is the install-side companion to:
 
@@ -31,9 +31,9 @@ multica daemon restart
 
 Or, in the desktop app, just relaunch the app. The daemon re-scans `PATH` on every start.
 
-## The 15 supported tools
+## The 16 supported tools
 
-Listed roughly from most to least common. Pick whichever ones you already have credentials for — you don't need all 15.
+Listed roughly from most to least common. Pick whichever ones you already have credentials for — you don't need all 16.
 
 ### Claude Code (Anthropic)
 
@@ -191,6 +191,17 @@ xAI's Grok Build CLI (`grok`). Multica drives it over ACP via `grok --no-auto-up
 | Install | Install the Grok Build CLI and ensure `grok` is on `PATH` (often `~/.grok/bin`). |
 | Authentication | Run `grok login` (or complete the interactive login flow) so ACP sessions can authenticate. |
 | Notes | Override the binary with `MULTICA_GROK_PATH` and the default model with `MULTICA_GROK_MODEL` (e.g. `grok-4.5`). Minimum CLI version: `0.2.89`. |
+
+### ZCode (Z.ai)
+
+Z.ai's official desktop coding agent. Multica launches its bundled runtime through the Apache-2.0 community bridge `zcode-acp-server`, which translates ZCode's local app-server protocol to ACP. Sessions resume and models are discovered dynamically. Configure MCP inside ZCode; the pinned bridge does not yet forward Multica-managed MCP.
+
+| | |
+|---|---|
+| Daemon looks for | `zcode-acp-server`, plus either the official `zcode` command or `ZCode.app` in a standard macOS Applications directory |
+| Install | Install the official [ZCode desktop app](https://zcode.z.ai/en/docs/install), then build or install [`zcode-acp-server`](https://github.com/william0wang/zcode-acp) from a revision containing the runtime-preferences handshake fix in `william0wang/zcode-acp#38`. The published npm package `0.1.0` is older and is not compatible with current ZCode releases. |
+| Authentication | Sign in once in ZCode, or configure ZCode's API-key mode. The bridge reuses ZCode's local configuration; do not put the provider key in the Multica agent environment. |
+| Notes | Tested with ZCode 3.7.7 and bridge commit `a5cb8a1`. Override the bridge path with `MULTICA_ZCODE_PATH` and the default model with `MULTICA_ZCODE_MODEL`; use the exact discovered id, such as `multica-bigmodel\glm-5.2`. |
 
 ## After installing
 

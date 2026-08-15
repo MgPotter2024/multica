@@ -168,6 +168,10 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 		return cachedDiscovery(providerType, func() ([]Model, error) {
 			return discoverGrokModels(ctx, executablePath)
 		})
+	case "zcode":
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
+			return discoverZcodeModels(ctx, executablePath)
+		})
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q", providerType)
 	}
@@ -883,6 +887,17 @@ func discoverQoderModels(ctx context.Context, executablePath string) ([]Model, e
 	})
 }
 
+// discoverZcodeModels asks the ACP bridge for the catalog from the installed
+// ZCode configuration. The bridge tolerates the shared helper's legacy `acp`
+// positional argument and advertises its models as a session config option.
+func discoverZcodeModels(ctx context.Context, executablePath string) ([]Model, error) {
+	return discoverACPModels(ctx, executablePath, acpDiscoveryProvider{
+		defaultBin:   "zcode-acp-server",
+		clientName:   "multica-model-discovery",
+		tmpdirPrefix: "multica-zcode-discovery-",
+	})
+}
+
 // acpDiscoveryProvider configures how discoverACPModels launches an
 // ACP-speaking agent CLI. The shared helper drives every CLI in
 // the same way (initialize → optional authenticate → session/new → parse
@@ -1105,6 +1120,15 @@ func parseACPSessionNewModels(raw json.RawMessage) []Model {
 			CurrentModelID       string         `json:"currentModelId"`
 			CurrentModelIDSnake  string         `json:"current_model_id"`
 		} `json:"models"`
+		ConfigOptions []struct {
+			ID           string `json:"id"`
+			CurrentValue string `json:"currentValue"`
+			Options      []struct {
+				Value       string `json:"value"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"options"`
+		} `json:"configOptions"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil
@@ -1116,6 +1140,22 @@ func parseACPSessionNewModels(raw json.RawMessage) []Model {
 	currentModelID := strings.TrimSpace(resp.Models.CurrentModelID)
 	if currentModelID == "" {
 		currentModelID = strings.TrimSpace(resp.Models.CurrentModelIDSnake)
+	}
+	if len(availableModels) == 0 {
+		for _, option := range resp.ConfigOptions {
+			if option.ID != "model" {
+				continue
+			}
+			currentModelID = strings.TrimSpace(option.CurrentValue)
+			for _, choice := range option.Options {
+				availableModels = append(availableModels, acpModelInfo{
+					ModelID:     choice.Value,
+					Name:        choice.Name,
+					Description: choice.Description,
+				})
+			}
+			break
+		}
 	}
 	models := make([]Model, 0, len(availableModels))
 	seen := map[string]bool{}

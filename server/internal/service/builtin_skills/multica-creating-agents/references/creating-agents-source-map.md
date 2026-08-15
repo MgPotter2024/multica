@@ -78,6 +78,12 @@ only.
 | Dynamic Codex token gate | `thinking.go` 642–710 | Server persistence accepts syntactically safe Codex tokens so new catalog values do not require a Multica release; exact support remains a daemon-local per-model check |
 | Daemon invalid-combination handling | `internal/daemon/daemon.go` 3860–3892 | Before execution, invalid `(provider, model, thinking_level)` combinations log a warning and omit the override rather than failing the task |
 
+## ZCode MCP exception — `server/pkg/agent/zcode.go`
+
+| Contract | Line | Behavior |
+|---|---|---|
+| Multica-managed MCP rejected | 91–102 | Parses `mcp_config`, then fails a ZCode task when the server list is non-empty because the pinned bridge revision does not forward it; users must configure MCP in ZCode itself |
+
 ## Env endpoint — `server/internal/handler/agent_env.go`
 
 | Contract | Line | Behavior |

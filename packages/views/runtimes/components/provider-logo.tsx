@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { Monitor } from "lucide-react";
+import zcodeLogo from "./zcode-logo.png";
 
 // Claude (Anthropic) — official mark, sourced from Bootstrap Icons (bi-claude)
 function ClaudeLogo({ className }: { className: string }) {
@@ -208,6 +209,15 @@ function AntigravityLogo({ className }: { className: string }) {
   return <img src={antigravityLogoSrc} alt="Antigravity" className={className} />;
 }
 
+const zcodeLogoSrc: string = (() => {
+  const asset = zcodeLogo as unknown;
+  return typeof asset === "string" ? asset : (asset as { src: string }).src;
+})();
+
+function ZcodeLogo({ className }: { className: string }) {
+  return <img src={zcodeLogoSrc} alt="ZCode" className={className} />;
+}
+
 // Kiro CLI — official icon sourced from kiro.dev/icon.svg.
 function KiroLogo({ className }: { className: string }) {
   const maskId = `kiro-logo-mask-${useId().replace(/:/g, "")}`;
@@ -311,6 +321,8 @@ export function ProviderLogo({
       return <TraeLogo className={className} />;
     case "grok":
       return <GrokLogo className={className} />;
+    case "zcode":
+      return <ZcodeLogo className={className} />;
     default:
       return <Monitor className={className} />;
   }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -1044,5 +1045,32 @@ func TestCachedDiscovery(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("expected 1 underlying call due to cache, got %d", calls)
+	}
+}
+
+func TestParseACPSessionNewModelsFromConfigOptions(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`{"sessionId":"s","configOptions":[{"id":"model","currentValue":"glm-5.2","options":[{"value":"glm-5.2","name":"GLM-5.2"},{"value":"glm-5-turbo","name":"GLM-5-Turbo"}]}]}`)
+	models := parseACPSessionNewModels(raw)
+	if len(models) != 2 {
+		t.Fatalf("models = %+v, want two config-option models", models)
+	}
+	if models[0].ID != "glm-5.2" || !models[0].Default {
+		t.Fatalf("first model = %+v, want default glm-5.2", models[0])
+	}
+}
+
+func TestDiscoverZcodeModels(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fakePath := filepath.Join(dir, "zcode-acp-server")
+	writeTestExecutable(t, fakePath, []byte(fakeZcodeACPScript()))
+
+	models, err := discoverZcodeModels(context.Background(), fakePath)
+	if err != nil {
+		t.Fatalf("discover zcode models: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "glm-5.3" || !models[0].Default {
+		t.Fatalf("models = %+v, want default glm-5.3", models)
 	}
 }
