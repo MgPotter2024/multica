@@ -171,11 +171,11 @@ To actually "allow everyone," leave all three variables empty (or keep `ALLOW_SI
 
 ## Can you still invite people when signup is disabled?
 
-**Only people who already have a Multica account.** Accepting an invite doesn't check the signup allowlist — if the invitee has signed up already (for example in another workspace), clicking the invite link and signing in lets them accept.
+**Yes.** A live pending workspace invitation is an implicit per-email signup allowance. Existing users can sign in as usual, and a new user can request a verification code and create an account with the email address on a pending, unexpired invitation.
 
-**But people who have never signed up cannot be rescued by an invite.** Before accepting, they must sign in, and the first step of sign-in (requesting the verification code) passes through the signup allowlist check. If `ALLOW_SIGNUP=false`, or their email isn't in `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS`, they **cannot complete signup**, and therefore cannot accept the invite.
+Uninvited users and users whose invitations are expired, accepted, declined, or revoked remain blocked when `ALLOW_SIGNUP=false`.
 
-To invite an external collaborator who hasn't signed up yet: temporarily add their email to `ALLOWED_EMAILS`, wait for them to sign up and accept the invite, then remove the entry.
+You do not need to add ordinary invitees to `ALLOWED_EMAILS` or restart the server. The invitation must still be accepted through the normal invitation flow.
 
 For how to create and use invites, see [Members and roles](/members-roles).
 
