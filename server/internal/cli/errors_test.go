@@ -133,6 +133,61 @@ func TestFormatErrorValidationUsesServerMessage(t *testing.T) {
 	}
 }
 
+// TestFormatErrorConflictUsesServerMessage proves that a 409 with a
+// server-provided message (e.g. "user is already a member of this workspace"
+// from the invite endpoint) surfaces that message instead of the generic
+// canned conflict copy, and that a body-less 409 still falls back to it.
+func TestFormatErrorConflictUsesServerMessage(t *testing.T) {
+	t.Run("409 with body surfaces server message (EN)", func(t *testing.T) {
+		withLang(t, "en_US.UTF-8")
+		httpErr := &HTTPError{
+			Method:     "POST",
+			Path:       "/api/workspaces/ws/invitations",
+			StatusCode: 409,
+			Body:       `{"error":"user is already a member of this workspace"}`,
+		}
+		got := FormatError(httpErr, false)
+		if !strings.Contains(got, "user is already a member of this workspace") {
+			t.Errorf("expected server conflict message surfaced, got %q", got)
+		}
+		if strings.Contains(got, "Re-fetch the latest state") {
+			t.Errorf("canned conflict copy leaked alongside server message: %q", got)
+		}
+	})
+
+	t.Run("409 with body surfaces server message (ZH)", func(t *testing.T) {
+		withLang(t, "zh_CN.UTF-8")
+		httpErr := &HTTPError{
+			Method:     "POST",
+			Path:       "/api/workspaces/ws/invitations",
+			StatusCode: 409,
+			Body:       `{"error":"invitation already pending for this email"}`,
+		}
+		got := FormatError(httpErr, false)
+		if !strings.Contains(got, "冲突") || !strings.Contains(got, "invitation already pending for this email") {
+			t.Errorf("expected Chinese conflict prefix with server message, got %q", got)
+		}
+	})
+
+	t.Run("409 without body falls back to canned copy", func(t *testing.T) {
+		withLang(t, "en_US.UTF-8")
+		httpErr := &HTTPError{Method: "POST", Path: "/api/x", StatusCode: 409}
+		got := FormatError(httpErr, false)
+		if !strings.Contains(got, "conflicts with the current state") {
+			t.Errorf("expected canned conflict copy for body-less 409, got %q", got)
+		}
+	})
+
+	t.Run("409 with non-JSON body falls back to canned copy", func(t *testing.T) {
+		withLang(t, "en_US.UTF-8")
+		httpErr := &HTTPError{Method: "POST", Path: "/api/x", StatusCode: 409, Body: "conflict"}
+		got := FormatError(httpErr, false)
+		if !strings.Contains(got, "conflicts with the current state") {
+			t.Errorf("expected canned conflict copy for non-JSON 409 body, got %q", got)
+		}
+	})
+}
+
 func TestFormatErrorDebugIncludesRawChain(t *testing.T) {
 	withLang(t, "en_US.UTF-8")
 	httpErr := &HTTPError{Method: "GET", Path: "/api/issues/abc", StatusCode: 404, Body: `{"error":"not found"}`}
