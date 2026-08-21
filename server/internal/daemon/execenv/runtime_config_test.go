@@ -19,15 +19,19 @@ func TestSingleIssueExecutionSectionPresentForIssueRuns(t *testing.T) {
 		name string
 		ctx  TaskContextForEnv
 	}{
+		// Inline mode pinned: the Knowledge Layers section asserted below
+		// moves to .multica/platform.md in file mode (platform_reference
+		// tests cover that); Single-Issue Execution stays inline in both.
 		{
 			name: "assignment-triggered",
-			ctx:  TaskContextForEnv{IssueID: "11111111-2222-3333-4444-555555555555"},
+			ctx:  TaskContextForEnv{IssueID: "11111111-2222-3333-4444-555555555555", PlatformReference: PlatformReferenceInline},
 		},
 		{
 			name: "comment-triggered",
 			ctx: TaskContextForEnv{
-				IssueID:          "22222222-3333-4444-5555-666666666666",
-				TriggerCommentID: "33333333-4444-5555-6666-777777777777",
+				IssueID:           "22222222-3333-4444-5555-666666666666",
+				TriggerCommentID:  "33333333-4444-5555-6666-777777777777",
+				PlatformReference: PlatformReferenceInline,
 			},
 		},
 	}
@@ -47,7 +51,7 @@ func TestSingleIssueExecutionSectionPresentForIssueRuns(t *testing.T) {
 				"Complete the objective inside the assigned issue.",
 				"Do not create sub-issues, sibling issues, replacement issues, staged barriers, or coordination cards.",
 				"one issue for one objective",
-				"The server rejects issue creation and hierarchy changes from issue-bound agent runs.",
+				"The server rejects issue creation and hierarchy changes from issue-bound agent runs (agents granted the orchestrator role are exempt for sub-issues under issues assigned to them — see the multica-working-on-issues skill).",
 			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("[%s] section missing %q", tc.name, want)
@@ -257,7 +261,10 @@ func TestCommentTriggeredBriefResumedNoDeltaSkipsDefaultThreadRead(t *testing.T)
 // Assignment-triggered briefs are the high-risk path for role conflicts:
 // non-executor agents still need issue context, but the runtime workflow must
 // not turn status changes, investigation, implementation, or delegation into
-// permissions that override Agent Identity.
+// permissions that override Agent Identity. This is the ARG-548 INV-2 anchor:
+// the instruction-precedence section must keep stating that Agent Identity
+// wins over the workflow. The in_review transition is deliver-only now, so
+// the test pins the deliver contract instead of a generic status flip.
 func TestAssignmentTriggeredProtocolHonorsAgentIdentity(t *testing.T) {
 	t.Parallel()
 	const issueID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
@@ -272,7 +279,10 @@ func TestAssignmentTriggeredProtocolHonorsAgentIdentity(t *testing.T) {
 		"Run `multica issue status " + issueID + " in_progress` unless your Agent Identity forbids issue status changes; if it does, skip this step.",
 		"Complete the task within your Agent Identity boundaries.",
 		"Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action",
-		"When done, run `multica issue status " + issueID + " in_review` unless your Agent Identity forbids issue status changes; if it does, skip this step.",
+		"Deliver the verified result once",
+		"multica issue deliver " + issueID + " --content-file <path> --local-command",
+		"--customer-path passed|not_applicable",
+		"`multica issue deliver` is the only Agent path into `in_review`",
 		"If work cannot continue, keep the issue `in_progress`",
 		"Agents must never set `blocked`, `done`, or `cancelled`; those states are human-controlled.",
 	} {
@@ -284,10 +294,118 @@ func TestAssignmentTriggeredProtocolHonorsAgentIdentity(t *testing.T) {
 	for _, banned := range []string{
 		"4. Run `multica issue status " + issueID + " in_progress`\n",
 		"5. Follow your Skills and Agent Identity to complete the task (write code, investigate, etc.)",
-		"8. When done, run `multica issue status " + issueID + " in_review`\n",
+		"When done, run `multica issue status " + issueID + " in_review`",
 	} {
 		if strings.Contains(out, banned) {
 			t.Errorf("assignment-triggered brief still contains unconditional legacy workflow text %q\n---\n%s", banned, out)
+		}
+	}
+}
+
+// ARG-548 INV-1 anchor: the Mentions section must keep the escalation
+// mention contract — the `mention://member` link syntax that actually
+// notifies a human, and the guidance on when escalation is appropriate.
+// The unattended no-blocking-ask rule references this section, so losing
+// it would leave agents with no valid escalation path.
+func TestMentionsSectionKeepsEscalationContract(t *testing.T) {
+	t.Parallel()
+	for name, ctx := range map[string]TaskContextForEnv{
+		"assignment": {IssueID: "77777777-8888-9999-aaaa-bbbbbbbbbbbb"},
+		"comment": {
+			IssueID:          "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+			TriggerCommentID: "tc-1",
+		},
+	} {
+		out := buildMetaSkillContent("claude", ctx)
+		for _, want := range []string{
+			"## Mentions",
+			"`[@Name](mention://member/<user-id>)` — **notifies a human**",
+			"Escalating to a human owner not yet involved",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s brief missing escalation mention contract %q\n---\n%s", name, want, out)
+			}
+		}
+	}
+}
+
+// ARG-548 M3: an assignment run that resumes its own prior session must not
+// be told to re-read the full recent comment history — it gets an
+// incremental `--since` read anchored at its last run instead.
+func TestAssignmentBriefResumedSessionUsesIncrementalRead(t *testing.T) {
+	t.Parallel()
+	const (
+		issueID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+		since   = "2026-08-20T10:00:00Z"
+	)
+	ctx := TaskContextForEnv{
+		IssueID:             issueID,
+		PriorSessionResumed: true,
+		NewCommentsSince:    since,
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	if strings.Contains(out, "--recent 10") {
+		t.Errorf("resumed assignment brief must not force the full --recent 10 re-read, got:\n%s", out)
+	}
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
+		t.Errorf("resumed assignment brief must point at the incremental --since read, got:\n%s", out)
+	}
+	if !strings.Contains(out, "do not re-read history you already processed") {
+		t.Errorf("resumed assignment brief must tell the agent not to re-read processed history, got:\n%s", out)
+	}
+}
+
+// ARG-548 review ADV-3: a resumed assignment run whose claim carries NO
+// server-supplied since-anchor must NOT be told to skip history on its own
+// guesswork — the incremental branch is only safe when the server anchored
+// it. With an empty anchor the brief falls back to the mandatory cold
+// `--recent 10` read, and the old "use your own knowledge as the --since
+// anchor" wording must be gone entirely.
+func TestAssignmentBriefResumedSessionWithEmptyAnchorFallsBackToColdRead(t *testing.T) {
+	t.Parallel()
+	const issueID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+	ctx := TaskContextForEnv{
+		IssueID:             issueID,
+		PriorSessionResumed: true,
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	for _, want := range []string{
+		"multica issue comment list " + issueID + " --recent 10 --output json",
+		"this is mandatory, not optional",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("resumed assignment brief without anchor must keep the mandatory cold read, missing %q\n---\n%s", want, out)
+		}
+	}
+	// Note: the bare `[--since <RFC3339>]` flag doc in the `issue comment
+	// list` command bullet is fine — only the unanchored incremental
+	// INSTRUCTION is banned.
+	for _, banned := range []string{
+		"--since <RFC3339> --output json",
+		"your own knowledge of when your last run happened",
+		"do not re-read history you already processed",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("resumed assignment brief without anchor must not carry unanchored incremental wording %q\n---\n%s", banned, out)
+		}
+	}
+}
+
+// ARG-548 M3 cold-start guard: a cold assignment run (no prior session, no
+// since-anchor) must keep the mandatory full `--recent 10` read unchanged.
+func TestAssignmentBriefColdStartKeepsMandatoryFullRead(t *testing.T) {
+	t.Parallel()
+	const issueID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+	out := buildMetaSkillContent("claude", TaskContextForEnv{IssueID: issueID})
+
+	for _, want := range []string{
+		"multica issue comment list " + issueID + " --recent 10 --output json",
+		"this is mandatory, not optional",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cold assignment brief must keep the mandatory full read, missing %q\n---\n%s", want, out)
 		}
 	}
 }
@@ -363,46 +481,53 @@ func TestChatOutputDoesNotRequireIssueComment(t *testing.T) {
 }
 
 // The Output section for issue tasks must forbid mid-run progress
-// comments and require the single final result comment. Guards the
+// comments and require exactly one final result delivery. Guards the
 // MUL-3605 regression where a review agent surfaced its progress
-// narration as the result instead of posting a conclusion. (The
-// pre-existing "Final results MUST be delivered … invisible without it"
-// and "state the outcome, not the process" lines already carry the
-// mandatory-comment and no-process-dump halves.) Chat / quick-create /
-// autopilot kinds keep their own delivery channels and must NOT inherit
-// this rule. Runs both the legacy and slim paths.
+// narration as the result instead of posting a conclusion. Since the
+// deliver-workflow rework, the two issue kinds deliver differently:
+// comment-triggered runs post exactly one result comment, while
+// assignment-triggered runs finish through `multica issue deliver`
+// (which posts exactly one result comment atomically). Chat /
+// quick-create / autopilot kinds keep their own delivery channels and
+// must NOT inherit these rules.
 func TestOutputForbidsMidRunProgressComments(t *testing.T) {
-	wantPhrases := []string{
+	commentPhrases := []string{
 		"Post exactly ONE comment per run",
 		"Do NOT post progress updates",
 	}
-	issueCtxs := map[string]TaskContextForEnv{
-		"assignment": {IssueID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
-		"comment":    {IssueID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", TriggerCommentID: "tc-1"},
-	}
-
-	run := func(t *testing.T, label string) {
-		for name, ctx := range issueCtxs {
-			out := buildMetaSkillContent("claude", ctx)
-			for _, want := range wantPhrases {
-				if !strings.Contains(out, want) {
-					t.Errorf("%s/%s brief missing output rule %q\n---\n%s", label, name, want, out)
-				}
-			}
-		}
-		// Chat keeps its own delivery channel; it must not inherit the
-		// issue-task "post a final comment" rules.
-		chat := buildMetaSkillContent("claude", TaskContextForEnv{ChatSessionID: "chat-1"})
-		for _, banned := range wantPhrases {
-			if strings.Contains(chat, banned) {
-				t.Errorf("%s chat brief must not inherit issue output rule %q", label, banned)
-			}
+	comment := buildMetaSkillContent("claude", TaskContextForEnv{
+		IssueID:          "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		TriggerCommentID: "tc-1",
+	})
+	for _, want := range commentPhrases {
+		if !strings.Contains(comment, want) {
+			t.Errorf("comment brief missing output rule %q\n---\n%s", want, comment)
 		}
 	}
 
-	// The `runtime_brief_slim` flag was retired (MUL-4297); there is now a
-	// single brief.
-	run(t, "brief")
+	// Assignment runs deliver via `multica issue deliver`: exactly one
+	// result comment, posted atomically, with no parallel `comment add`.
+	assignment := buildMetaSkillContent("claude", TaskContextForEnv{
+		IssueID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+	})
+	for _, want := range []string{
+		"Final results MUST be delivered via `multica issue deliver`",
+		"posts exactly one result comment",
+		"do not also call `comment add` or generic `issue status`",
+	} {
+		if !strings.Contains(assignment, want) {
+			t.Errorf("assignment brief missing deliver output rule %q\n---\n%s", want, assignment)
+		}
+	}
+
+	// Chat keeps its own delivery channel; it must not inherit the
+	// issue-task delivery rules.
+	chat := buildMetaSkillContent("claude", TaskContextForEnv{ChatSessionID: "chat-1"})
+	for _, banned := range append(commentPhrases, "Final results MUST be delivered via `multica issue deliver`") {
+		if strings.Contains(chat, banned) {
+			t.Errorf("chat brief must not inherit issue output rule %q", banned)
+		}
+	}
 }
 
 // The sub-issue creation rule must reach top-level parents that have no
@@ -541,9 +666,13 @@ func TestWorkspaceContextHeadingSkippedWhenEmpty(t *testing.T) {
 }
 
 func TestConnectedAppsRenderedAcrossBriefModes(t *testing.T) {
+	// Inline mode pinned: in platform-reference file mode the Connected
+	// Apps section moves to .multica/platform.md (platform_reference tests
+	// cover that rendering).
 	ctx := TaskContextForEnv{
-		IssueID:          "11111111-2222-3333-4444-555555555555",
-		WorkspaceContext: "Prefer source-of-truth systems.",
+		IssueID:           "11111111-2222-3333-4444-555555555555",
+		PlatformReference: PlatformReferenceInline,
+		WorkspaceContext:  "Prefer source-of-truth systems.",
 		ConnectedApps: []runtimeapps.ConnectedApp{{
 			Provider:    "composio",
 			ServerName:  "composio",

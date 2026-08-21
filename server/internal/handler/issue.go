@@ -2144,12 +2144,37 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	requestActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	requestActorType, requestActorID := h.resolveActor(r, creatorID, workspaceID)
+	requestActorRole := h.agentActorRole(r.Context(), requestActorType, requestActorID)
 	requestOriginType := ""
 	if req.OriginType != nil {
 		requestOriginType = *req.OriginType
 	}
-	if err := issuepolicy.ValidateCreate(requestActorType, requestOriginType, req.ParentIssueID != nil); err != nil {
+	// Orchestrator sub-issue creation (ARG-548 M9, tightened by the ARG-548
+	// review): the parent must exist in this workspace, be assigned to the
+	// acting agent, and be a TOP-LEVEL issue (ADV-7a depth cap); the sub-issue
+	// must not be assigned back to the acting orchestrator (ADV-7b). The facts
+	// are only looked up for orchestrator agents so every other create path
+	// keeps its current query profile; any lookup failure leaves the
+	// permissive facts false (fail closed).
+	createFacts := issuepolicy.CreateFacts{HasParent: req.ParentIssueID != nil}
+	if requestActorType == "agent" && requestActorRole == issuepolicy.RoleOrchestrator && req.ParentIssueID != nil {
+		if parentUUID, err := util.ParseUUID(*req.ParentIssueID); err == nil {
+			if parent, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+				ID:          parentUUID,
+				WorkspaceID: wsUUID,
+			}); err == nil {
+				createFacts.ParentAssignedToActor = issueAssignedToAgent(parent, requestActorID)
+				createFacts.ParentIsSubIssue = parent.ParentIssueID.Valid
+			}
+		}
+		if req.AssigneeType != nil && *req.AssigneeType == "agent" && req.AssigneeID != nil {
+			if assigneeUUID, err := util.ParseUUID(*req.AssigneeID); err == nil {
+				createFacts.AssigneeIsActor = uuidToString(assigneeUUID) == requestActorID
+			}
+		}
+	}
+	if err := issuepolicy.ValidateCreate(requestActorType, requestActorRole, requestOriginType, createFacts); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -2163,6 +2188,13 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		priority = "none"
 	}
 	if !validateIssueEnum(w, "status", status, validIssueStatuses) {
+		return
+	}
+	// Agents can never mint an issue directly in a review or terminal status
+	// (ARG-548 review, ADV-6) — those statuses require the gated transition
+	// paths (deliver for in_review, the reviewer gate for done).
+	if err := issuepolicy.ValidateCreateStatus(requestActorType, status); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if !validateIssueEnum(w, "priority", priority, validIssuePriorities) {
@@ -2418,7 +2450,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := requestUserID(r)
 	workspaceID := uuidToString(prevIssue.WorkspaceID)
-	actorType, _ := h.resolveActor(r, userID, workspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	actorRole := h.agentActorRole(r.Context(), actorType, actorID)
 
 	// Read body as raw bytes so we can detect which fields were explicitly sent.
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -2467,7 +2500,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if !validateIssueEnum(w, "status", *req.Status, validIssueStatuses) {
 			return
 		}
-		if err := issuepolicy.ValidateStatus(actorType, *req.Status); err != nil {
+		if err := issuepolicy.ValidateStatus(actorType, actorRole, prevIssue.Status, *req.Status,
+			h.agentStatusFacts(r.Context(), prevIssue, actorType, actorRole, actorID, *req.Status)); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -2526,7 +2560,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, ok := rawFields["parent_issue_id"]; ok {
-		if err := issuepolicy.ValidateHierarchyChange(actorType, true); err != nil {
+		// withinOwnedParent (ARG-548 M9): only computed for orchestrator
+		// agents — members skip the policy branch and plain agents are
+		// rejected regardless of the fact, so neither pays the lookups.
+		withinOwnedParent := false
+		if actorType == "agent" && actorRole == issuepolicy.RoleOrchestrator {
+			withinOwnedParent = h.orchestratorHierarchyFact(r.Context(), prevIssue, actorID, req.ParentIssueID)
+		}
+		if err := issuepolicy.ValidateHierarchyChange(actorType, actorRole, true, withinOwnedParent); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -2641,9 +2682,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	dueDateChanged := prevDueDate != resp.DueDate && (prevDueDate == nil) != (resp.DueDate == nil) ||
 		(prevDueDate != nil && resp.DueDate != nil && *prevDueDate != *resp.DueDate)
 
-	// Determine actor identity: agent (via X-Agent-ID header) or member.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-
+	// Actor identity (agent via X-Agent-ID header, or member) was resolved
+	// once at the top of the handler for the role gates; reuse it here.
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
 		"issue":               resp,
 		"assignee_changed":    assigneeChanged,
@@ -2999,7 +3039,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	actorType, _ := h.resolveActor(r, userID, workspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	actorRole := h.agentActorRole(r.Context(), actorType, actorID)
 	if req.Updates.Status != nil && *req.Updates.Status == "in_review" && h.verifiedDeliveryRequiredForTask(r, actorType) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"code":  "delivery_verification_required",
@@ -3008,13 +3049,23 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Updates.Status != nil {
-		if err := issuepolicy.ValidateStatus(actorType, *req.Updates.Status); err != nil {
+		// Pre-loop check with the BEST-CASE per-issue facts (current status
+		// in_review, a delivery receipt recorded by someone else, not
+		// self-assigned): it rejects the whole batch exactly as before when
+		// no issue could ever pass (plain agent setting done, any agent
+		// setting blocked/cancelled), while letting reviewer batches proceed
+		// to the real per-issue enforcement inside the loop.
+		if err := issuepolicy.ValidateStatus(actorType, actorRole, "in_review", *req.Updates.Status,
+			issuepolicy.StatusFacts{HasDelivery: true}); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
 	}
 	if _, touchedParent := rawUpdates["parent_issue_id"]; touchedParent {
-		if err := issuepolicy.ValidateHierarchyChange(actorType, true); err != nil {
+		// Same best-case pattern: withinOwnedParent=true here only decides
+		// whether the batch is rejected wholesale; orchestrator batches are
+		// re-checked per issue with the real ownership fact inside the loop.
+		if err := issuepolicy.ValidateHierarchyChange(actorType, actorRole, true, true); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -3035,6 +3086,28 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			continue
+		}
+
+		// Per-issue role-gate enforcement with the REAL facts (the pre-loop
+		// checks above used best-case facts). An issue that fails is skipped,
+		// matching this loop's continue-on-invalid convention. Members skip
+		// both checks entirely.
+		if actorType == "agent" {
+			if req.Updates.Status != nil {
+				if err := issuepolicy.ValidateStatus(actorType, actorRole, prevIssue.Status, *req.Updates.Status,
+					h.agentStatusFacts(r.Context(), prevIssue, actorType, actorRole, actorID, *req.Updates.Status)); err != nil {
+					continue
+				}
+			}
+			if _, ok := rawUpdates["parent_issue_id"]; ok {
+				withinOwnedParent := false
+				if actorRole == issuepolicy.RoleOrchestrator {
+					withinOwnedParent = h.orchestratorHierarchyFact(r.Context(), prevIssue, actorID, req.Updates.ParentIssueID)
+				}
+				if err := issuepolicy.ValidateHierarchyChange(actorType, actorRole, true, withinOwnedParent); err != nil {
+					continue
+				}
+			}
 		}
 
 		params := db.UpdateIssueParams{

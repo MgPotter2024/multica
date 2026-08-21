@@ -16,6 +16,7 @@ import (
 	"github.com/mattn/go-shellwords"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 const (
@@ -27,7 +28,17 @@ const (
 	// (DefaultAgentIdleWatchdog / DefaultAgentToolWatchdog), so a session that keeps emitting events is
 	// never killed merely for running long (MUL-3064). Operators who want a
 	// hard ceiling for cost/resource control can set MULTICA_AGENT_TIMEOUT.
-	DefaultAgentTimeout                   = 0
+	DefaultAgentTimeout = 0
+	// DefaultAgentMaxTurns caps the number of agent turns in a single run.
+	// 300 is a deliberately generous runaway-kill ceiling, not a normal-run
+	// budget: healthy runs finish far below it, and the cap exists so a run
+	// stuck retrying the same step cannot burn tokens forever. Raised from
+	// 200 after ARG-548 review ADV-5: legitimate long leader runs
+	// (delegation, polling, multi-batch checks) were at risk of hitting the
+	// old ceiling. Set MULTICA_AGENT_MAX_TURNS to override; 0 disables the
+	// ceiling. Only backends with a --max-turns flag (claude, codebuddy)
+	// enforce it; other adapters ignore the option.
+	DefaultAgentMaxTurns                  = 300
 	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
 	// DefaultAgentIdleWatchdog is the per-task safety net that force-stops a
 	// run when the backend has emitted no message for this long AND its
@@ -73,30 +84,37 @@ var DefaultGCArtifactPatterns = []string{"node_modules", ".next", ".turbo"}
 
 // Config holds all daemon configuration.
 type Config struct {
-	ServerBaseURL                  string
-	DaemonID                       string
-	LegacyDaemonIDs                []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
-	DeviceName                     string
-	RuntimeName                    string
-	CLIVersion                     string                // multica CLI version (e.g. "0.1.13")
-	LaunchedBy                     string                // "desktop" when spawned by the Electron app, empty for standalone
-	Profile                        string                // profile name (empty = default)
-	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok, zcode
-	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
-	KeepEnvAfterTask               bool                  // preserve env after task for debugging
-	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
-	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
-	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
-	GCInterval                     time.Duration         // how often the GC loop runs (default: 1h)
-	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
-	GCOrphanTTL                    time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
-	GCArtifactTTL                  time.Duration         // when a task has been completed for at least this long but its issue is still open, drop regenerable artifacts (default: 12h, set 0 to disable)
-	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
-	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
-	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
-	PollInterval                   time.Duration
-	HeartbeatInterval              time.Duration
-	AgentTimeout                   time.Duration
+	ServerBaseURL           string
+	DaemonID                string
+	LegacyDaemonIDs         []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
+	DeviceName              string
+	RuntimeName             string
+	CLIVersion              string                // multica CLI version (e.g. "0.1.13")
+	LaunchedBy              string                // "desktop" when spawned by the Electron app, empty for standalone
+	Profile                 string                // profile name (empty = default)
+	Agents                  map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok, zcode
+	WorkspacesRoot          string                // base path for execution envs (default: ~/multica_workspaces)
+	KeepEnvAfterTask        bool                  // preserve env after task for debugging
+	HealthPort              int                   // local HTTP port for health checks (default: 19514)
+	MaxConcurrentTasks      int                   // max tasks running in parallel (default: 20)
+	GCEnabled               bool                  // enable periodic workspace garbage collection (default: true)
+	GCInterval              time.Duration         // how often the GC loop runs (default: 1h)
+	GCTTL                   time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
+	GCOrphanTTL             time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
+	GCArtifactTTL           time.Duration         // when a task has been completed for at least this long but its issue is still open, drop regenerable artifacts (default: 12h, set 0 to disable)
+	GCArtifactPatterns      []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
+	AutoUpdateEnabled       bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
+	AutoUpdateCheckInterval time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
+	PollInterval            time.Duration
+	HeartbeatInterval       time.Duration
+	AgentTimeout            time.Duration
+	AgentMaxTurns           int // per-run agent turn ceiling passed to backends that support --max-turns (0 = disabled)
+	// PlatformReference selects where the runtime brief's static platform
+	// reference sections live: "file" (default — externalized to
+	// .multica/platform.md in the task workdir with a pointer in the brief)
+	// or "inline" (legacy byte-identical brief; rollback switch). Set via
+	// MULTICA_PLATFORM_REFERENCE; invalid values fail startup loudly.
+	PlatformReference              execenv.PlatformReferenceMode
 	CodexSemanticInactivityTimeout time.Duration
 	AgentIdleWatchdog              time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog              time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = disabled); backstop for hung tools now that there is no wall-clock cap
@@ -393,6 +411,18 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		agentTimeout = *overrides.AgentTimeout
 	}
 
+	agentMaxTurns, err := agentMaxTurnsFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+
+	// Platform reference mode: empty env → default (file); a typo fails
+	// startup loudly instead of silently picking a brief layout.
+	platformReference, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar))
+	if err != nil {
+		return Config{}, err
+	}
+
 	codexSemanticInactivityTimeout, err := durationFromEnv("MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT", DefaultCodexSemanticInactivityTimeout)
 	if err != nil {
 		return Config{}, err
@@ -562,6 +592,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		PollInterval:                   pollInterval,
 		HeartbeatInterval:              heartbeatInterval,
 		AgentTimeout:                   agentTimeout,
+		AgentMaxTurns:                  agentMaxTurns,
+		PlatformReference:              platformReference,
 		CodexSemanticInactivityTimeout: codexSemanticInactivityTimeout,
 		AgentIdleWatchdog:              agentIdleWatchdog,
 		AgentToolWatchdog:              agentToolWatchdog,
@@ -570,6 +602,21 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodebuddyArgs:                  codebuddyArgs,
 		ProfileCommandOverrides:        profileCommandOverrides,
 	}, nil
+}
+
+// agentMaxTurnsFromEnv resolves the per-run agent turn ceiling from
+// MULTICA_AGENT_MAX_TURNS. Empty → DefaultAgentMaxTurns; 0 disables the
+// ceiling; negative values are rejected so a typo fails loudly at startup
+// instead of silently disabling the runaway kill switch.
+func agentMaxTurnsFromEnv() (int, error) {
+	n, err := intFromEnv("MULTICA_AGENT_MAX_TURNS", DefaultAgentMaxTurns)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("MULTICA_AGENT_MAX_TURNS: must be >= 0 (0 disables the ceiling), got %d", n)
+	}
+	return n, nil
 }
 
 // officialCloudHost is the hostname of Multica's hosted cloud. It's the only

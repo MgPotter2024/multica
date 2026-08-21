@@ -130,6 +130,20 @@ type TaskContextForEnv struct {
 	InitiatorID    string
 	InitiatorName  string
 	InitiatorEmail string
+	// PlatformReference selects whether the brief's static reference
+	// sections render inline or in .multica/platform.md (ARG-548 Phase 1).
+	// The daemon sets it from its validated Config
+	// (MULTICA_PLATFORM_REFERENCE); when left empty, execenv resolves the
+	// same env var itself and falls back to the default (file). See
+	// effectivePlatformReference.
+	PlatformReference PlatformReferenceMode
+	// WorkDir is the absolute task working directory. Set by
+	// InjectRuntimeConfig just before the brief renders so file-mode pointer
+	// lines can print the absolute .multica/platform.md path (a relative
+	// pointer dangles once the agent cds into a checked-out repo — ARG-548
+	// review ADV-10). Never rendered into platform.md itself, which must stay
+	// byte-stable across runs.
+	WorkDir string
 }
 
 // SkillContextForEnv represents a skill to be written into the execution environment.

@@ -98,28 +98,38 @@ func TestBuildMetaSkillContentSlimKindMatrix(t *testing.T) {
 	issueKinds := map[taskKind]bool{
 		kindCommentTriggered: true, kindAssignmentTriggered: true,
 	}
-	checks := []sectionCheck{
-		{"# Multica Agent Runtime", allKinds},
-		{"## Background Task Safety", allKinds},
-		{"## Agent Identity", allKinds},
-		{"## Available Commands", allKinds},
-		{"### Workflow", allKinds},
-		{"## Important: Always Use the `multica` CLI", allKinds},
-		{"## Output", allKinds},
-		{"## Comment Formatting", issueKinds},
-		{"## Repositories", map[taskKind]bool{
-			kindCommentTriggered: true, kindAssignmentTriggered: true,
-			kindAutopilotRunOnly: true, kindChat: true,
-		}},
-		{"## Issue Metadata", issueKinds},
-		{"## Instruction Precedence", map[taskKind]bool{kindAssignmentTriggered: true}},
-		{"## Single-Issue Execution", issueKinds},
-		{"## Skills", map[taskKind]bool{
-			kindCommentTriggered: true, kindAssignmentTriggered: true,
-			kindAutopilotRunOnly: true, kindChat: true,
-		}},
-		{"## Mentions", issueKinds},
-		{"## Attachments", issueKinds},
+	// Attachments moves to .multica/platform.md in platform-reference file
+	// mode; every other heading in this matrix must hold in BOTH modes
+	// (the INV anchors — Workflow, Mentions, Precedence, Output — most of
+	// all). checksFor keeps the matrix shared and flips only that row.
+	checksFor := func(mode PlatformReferenceMode) []sectionCheck {
+		attachmentsKinds := issueKinds
+		if mode == PlatformReferenceFile {
+			attachmentsKinds = map[taskKind]bool{}
+		}
+		return []sectionCheck{
+			{"# Multica Agent Runtime", allKinds},
+			{"## Background Task Safety", allKinds},
+			{"## Agent Identity", allKinds},
+			{"## Available Commands", allKinds},
+			{"### Workflow", allKinds},
+			{"## Important: Always Use the `multica` CLI", allKinds},
+			{"## Output", allKinds},
+			{"## Comment Formatting", issueKinds},
+			{"## Repositories", map[taskKind]bool{
+				kindCommentTriggered: true, kindAssignmentTriggered: true,
+				kindAutopilotRunOnly: true, kindChat: true,
+			}},
+			{"## Issue Metadata", issueKinds},
+			{"## Instruction Precedence", map[taskKind]bool{kindAssignmentTriggered: true}},
+			{"## Single-Issue Execution", issueKinds},
+			{"## Skills", map[taskKind]bool{
+				kindCommentTriggered: true, kindAssignmentTriggered: true,
+				kindAutopilotRunOnly: true, kindChat: true,
+			}},
+			{"## Mentions", issueKinds},
+			{"## Attachments", attachmentsKinds},
+		}
 	}
 
 	fixtures := map[taskKind]TaskContextForEnv{
@@ -135,18 +145,22 @@ func TestBuildMetaSkillContentSlimKindMatrix(t *testing.T) {
 			Repos: baseRepo, AgentSkills: baseSkill},
 	}
 
-	for kind, ctx := range fixtures {
-		out := buildMetaSkillContent("claude", ctx)
-		for _, c := range checks {
-			needle := "\n" + c.heading + "\n"
-			firstLine := c.heading + "\n"
-			present := strings.HasPrefix(out, firstLine) || strings.Contains(out, needle)
-			want := c.mustHave[kind]
-			if want && !present {
-				t.Errorf("kind=%d: expected heading %q in slim brief", kind, c.heading)
-			}
-			if !want && present {
-				t.Errorf("kind=%d: heading %q should NOT be in slim brief (matrix gating regression)", kind, c.heading)
+	for _, mode := range []PlatformReferenceMode{PlatformReferenceInline, PlatformReferenceFile} {
+		checks := checksFor(mode)
+		for kind, ctx := range fixtures {
+			ctx.PlatformReference = mode
+			out := buildMetaSkillContent("claude", ctx)
+			for _, c := range checks {
+				needle := "\n" + c.heading + "\n"
+				firstLine := c.heading + "\n"
+				present := strings.HasPrefix(out, firstLine) || strings.Contains(out, needle)
+				want := c.mustHave[kind]
+				if want && !present {
+					t.Errorf("mode=%s kind=%d: expected heading %q in slim brief", mode, kind, c.heading)
+				}
+				if !want && present {
+					t.Errorf("mode=%s kind=%d: heading %q should NOT be in slim brief (matrix gating regression)", mode, kind, c.heading)
+				}
 			}
 		}
 	}

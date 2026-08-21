@@ -55,10 +55,20 @@ func Files(direction string) ([]string, error) {
 		return nil, err
 	}
 
+	// List the literal directory instead of filepath.Glob: glob metacharacters
+	// ([, ], *, ?) in the checkout path would make the pattern silently match
+	// nothing.
 	suffix := "." + direction + ".sql"
-	files, err := filepath.Glob(filepath.Join(dir, "*"+suffix))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), suffix) {
+			continue
+		}
+		files = append(files, filepath.Join(dir, entry.Name()))
 	}
 
 	if direction == "down" {

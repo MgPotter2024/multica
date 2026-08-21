@@ -154,6 +154,26 @@ creates exactly one result comment, records bounded local verification and custo
 and enters `in_review` in one transaction. Humans retain the generic status controls. Reply-mode
 Agents remain comment-only unless their trigger explicitly grants ownership.
 
+The deliver flag contract (flag presence and combinations are validated
+client-side before the API call; the `--customer-method` enum
+`browser|cli|api` is enforced server-side):
+
+```bash
+multica issue deliver <id> \
+  --content-file <path-inside-workdir> \
+  --local-command "<final verification command>" \
+  --local-result "<bounded result summary>" \
+  --customer-path passed|not_applicable \
+  # when --customer-path passed, ALL THREE are also required:
+  --customer-method browser|cli|api --customer-surface <surface> --customer-evidence "<observed result>" \
+  # when --customer-path not_applicable, this is also required instead:
+  --customer-reason "<why no customer path applies>"
+```
+
+`--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required.
+`--parent <comment-id>` is optional (comment-triggered tasks). The content file must be valid,
+non-empty UTF-8 inside the current working directory.
+
 A status change is not cosmetic — the server enqueues or skips agent work based
 on it. These are the contracts, not advice:
 
@@ -167,11 +187,41 @@ on it. These are the contracts, not advice:
   itself on merge — you do not also need to flip it manually.
 - **`cancelled`** stops outstanding work; treat it as a user-driven decision.
 
+Agent status writes are gated server-side: agents may set
+`backlog`/`todo`/`in_progress`/`in_review`; `blocked` and `cancelled` are
+always rejected. One narrow exception (ARG-548): an agent whose `role` is
+`reviewer` may set `done`, and only when ALL of these hold:
+
+- the issue is currently `in_review`;
+- a verified delivery receipt exists for the issue — receipts are written
+  only by the real `multica issue deliver` flow, so an `in_review` status
+  set by a plain status write proves nothing;
+- the latest receipt was recorded by a DIFFERENT agent, and the acting
+  reviewer has never recorded a receipt for the issue (receipt authorship is
+  immutable — a reviewer that implemented and delivered an issue cannot
+  approve it, even after unassigning itself);
+- the issue is not currently assigned to that reviewer (implementer ≠
+  reviewer).
+
+Any other agent `done` write — single or batch — is rejected with 403.
+
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
 On an agent-assigned issue, create status decides whether the assignee fires
 immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
 time; `backlog` sets the assignee without triggering.
+
+Creating sub-issues is member work by default — agent creates are rejected
+with 403, except (ARG-548) an agent whose `role` is `orchestrator` may create
+sub-issues (including staged ones) under an issue currently assigned to that
+same agent, and may re-parent such sub-issues within its own subtree. Two
+hard bounds apply to orchestrator creates: the parent must be a TOP-LEVEL
+issue (depth cap 1 — no grandchildren under another sub-issue), and the
+sub-issue can never be assigned to the creating orchestrator itself (no
+self-triggering recursion). Additionally, every agent create — quick-create
+and orchestrator alike — may only use status `backlog`, `todo`, or
+`in_progress`; `in_review`, `done`, `blocked`, and `cancelled` are rejected
+at create time with 403. All other agent hierarchy changes remain forbidden.
 
 Parallel children — all start now:
 

@@ -182,6 +182,29 @@ func sanitizeBriefCodeToken(s string) string {
 	return s
 }
 
+// The three core command bullets shared byte-for-byte between the inline
+// brief (writeAvailableCommands) and the file-mode brief
+// (writeAvailableCommandsFileMode). These are the only Available Commands
+// lines that stay inline when the platform reference is externalized: `issue
+// get` and `issue comment list` are the mandatory workflow reads, and `issue
+// deliver` carries the full delivery flag contract, which is a behavior
+// contract and must never live only in the reference file.
+const (
+	cmdBulletIssueGet         = "- `multica issue get <id> --output json` — full issue.\n"
+	cmdBulletIssueCommentList = "- `multica issue comment list <issue-id> [--thread <comment-id> [--tail N] | --recent N] [--before <ts> --before-id <uuid>] [--since <RFC3339>] [--full] --output json` — thread-aware comment reads. Resolved threads come back folded by default on complete-thread reads (default list, `--recent`, `--thread` without `--tail`); pass `--full` to expand. Page older replies / threads with `--before`/`--before-id` (stderr labels: `Next reply cursor`, `Next thread cursor`); `--help` for full semantics.\n"
+	cmdBulletIssueDeliver     = "- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [--customer-method browser|cli|api --customer-surface <surface> --customer-evidence <summary> | --customer-reason <reason>] [--parent <comment-id>]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`. `--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required; `--customer-path passed` also requires `--customer-method`, `--customer-surface`, and `--customer-evidence`; `--customer-path not_applicable` also requires `--customer-reason`.\n"
+)
+
+// writePlatformReferencePointer emits the mandatory one-line pointer the
+// file-mode brief carries in place of the externalized reference sections.
+// The printed path is the absolute workdir-joined location when the workdir
+// is known (agents routinely cd into checked-out repos, where a relative
+// `.multica/platform.md` dangles — ARG-548 review ADV-10); bare renders
+// (tests, previews with no workdir) keep the relative form.
+func writePlatformReferencePointer(b *strings.Builder, ctx TaskContextForEnv) {
+	fmt.Fprintf(b, "Platform command/reference details live in %s — read it when you need command flags or platform mechanics beyond this brief.\n", platformReferenceDisplayPath(ctx))
+}
+
 // writeAvailableCommands emits the slim Available Commands section
 // (~2.4k chars vs legacy ~4.4k). Every test-asserted substring is
 // preserved: each `multica issue …` command name, all three `comment add`
@@ -198,18 +221,20 @@ func writeAvailableCommands(b *strings.Builder) {
 	b.WriteString("## Available Commands\n\n")
 	b.WriteString("Prefer `--output json` for structured data. The default brief lists only the core agent loop and common issue create/update tasks; for everything else run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
-	b.WriteString("- `multica issue get <id> --output json` — full issue.\n")
-	b.WriteString("- `multica issue comment list <issue-id> [--thread <comment-id> [--tail N] | --recent N] [--before <ts> --before-id <uuid>] [--since <RFC3339>] [--full] --output json` — thread-aware comment reads. Resolved threads come back folded by default on complete-thread reads (default list, `--recent`, `--thread` without `--tail`); pass `--full` to expand. Page older replies / threads with `--before`/`--before-id` (stderr labels: `Next reply cursor`, `Next thread cursor`); `--help` for full semantics.\n")
+	b.WriteString(cmdBulletIssueGet)
+	b.WriteString(cmdBulletIssueCommentList)
 	b.WriteString("- `multica issue create --title \"...\" [--description-file <path>] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — create an issue. For agent-authored long descriptions prefer `--description-file <path>` (heredoc stdin can swallow trailing flags, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n")
 	b.WriteString("- `multica issue update <id> [--title X] [--description-file <path>] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>]` — update fields; pass `--parent \"\"` to clear parent.\n")
 	b.WriteString("- `multica issue status <id> <status>` — flip status (todo / in_progress / in_review / done / blocked / backlog / cancelled).\n")
-	b.WriteString("- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [...]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`.\n")
+	b.WriteString(cmdBulletIssueDeliver)
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
-	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file`. `multica issue comment add --help` for full flags.\n")
+	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file` (write the body to a UTF-8 file in your workdir first); pass `--parent <comment-id>` to reply inside a thread. `multica issue comment add --help` for full flags.\n")
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
 	b.WriteString("- `multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]` — pin or overwrite a key.\n")
 	b.WriteString("- `multica issue metadata delete <issue-id> --key <k>` — remove a key.\n")
 	b.WriteString("- `multica repo checkout <url> [--ref <branch-or-sha>]` — git worktree on a dedicated branch.\n\n")
+	b.WriteString("### Workspace\n")
+	b.WriteString("- `multica workspace member invite <email> [workspace-id|slug|prefix] [--role member|admin]` — send a pending email invitation; role defaults to `member`, owner is not allowed.\n\n")
 	b.WriteString("### Squad maintenance\n")
 	b.WriteString("- `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role> [--output json]` — change role in place (use this instead of remove+add).\n\n")
 }
@@ -223,6 +248,54 @@ func writeAvailableCommandsQuickCreate(b *strings.Builder) {
 	b.WriteString("**Use `--output json` for structured data.** For anything beyond `issue create`, run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
 	b.WriteString("- `multica issue create --title \"...\" [--description \"...\" | --description-file <path> | --description-stdin] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — Create a new issue; `--attachment` may be repeated. For agent-authored long descriptions, prefer `--description-file <path>` over `--description-stdin` (flags after a HEREDOC terminator can be silently swallowed, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n\n")
+}
+
+// writeAvailableCommandsFileMode emits the Available Commands section for
+// platform-reference file mode (ARG-548 Phase 1): the mandatory pointer to
+// `.multica/platform.md` plus ONLY the three core command lines (`issue get`,
+// `issue comment list`, and `issue deliver` with its full flag contract).
+// Everything else in the full list is static reference and lives in the
+// file. The three kept bullets are shared constants with
+// writeAvailableCommands so the two modes cannot drift.
+func writeAvailableCommandsFileMode(b *strings.Builder, ctx TaskContextForEnv) {
+	b.WriteString("## Available Commands\n\n")
+	writePlatformReferencePointer(b, ctx)
+	b.WriteString("\n")
+	b.WriteString("### Core\n")
+	b.WriteString(cmdBulletIssueGet)
+	b.WriteString(cmdBulletIssueCommentList)
+	b.WriteString(cmdBulletIssueDeliver)
+	b.WriteString("\n")
+}
+
+// writeIssueMetadataFileMode emits the one-sentence inline stand-in for the
+// Issue Metadata guidance in platform-reference file mode. The heading is
+// kept so the workflow steps' "See the `## Issue Metadata` section above"
+// references stay resolvable; the full discipline text lives in
+// `.multica/platform.md`.
+func writeIssueMetadataFileMode(b *strings.Builder, ctx TaskContextForEnv) {
+	b.WriteString("## Issue Metadata\n\n")
+	fmt.Fprintf(b, "Read issue metadata on entry, write sparingly on exit — full guidance in %s.\n\n", platformReferenceDisplayPath(ctx))
+}
+
+// writeRepositoriesFileMode emits the Repositories section for
+// platform-reference file mode: the dynamic repo URL list stays inline (it is
+// per-workspace task data the agent must see without opening another file),
+// while the checkout usage prose moves to `.multica/platform.md`.
+func writeRepositoriesFileMode(b *strings.Builder, ctx TaskContextForEnv) {
+	if len(ctx.Repos) == 0 {
+		return
+	}
+	b.WriteString("## Repositories\n\n")
+	fmt.Fprintf(b, "Available in this workspace — checkout usage in %s.\n\n", platformReferenceDisplayPath(ctx))
+	for _, repo := range ctx.Repos {
+		if repo.Description != "" {
+			fmt.Fprintf(b, "- %s — %s\n", repo.URL, repo.Description)
+		} else {
+			fmt.Fprintf(b, "- %s\n", repo.URL)
+		}
+	}
+	b.WriteString("\n")
 }
 
 // writeCommentFormatting emits the cross-platform file-first guardrail.
@@ -400,28 +473,71 @@ func writeWorkflowComment(b *strings.Builder, provider string, ctx TaskContextFo
 }
 
 // writeWorkflowAssignment emits the assignment-triggered workflow.
+//
+// Step 3 (comment catch-up) is conditional (ARG-548 M3): a run that resumes
+// its prior session AND has a server-supplied anchor gets an incremental read
+// through the same hint chain the comment-triggered workflow uses, so it does
+// not re-read history it already processed. Everything else — cold starts,
+// fresh sessions, resumed sessions with no anchor — keeps the mandatory full
+// `--recent 10` read unchanged — see writeAssignmentCommentCatchUp.
 func writeWorkflowAssignment(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("You are responsible for managing the issue status throughout your work, unless your Agent Identity forbids issue status changes.\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand your task\n", ctx.IssueID)
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
-	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID)
+	writeAssignmentCommentCatchUp(b, ctx)
 	fmt.Fprintf(b, "4. Run `multica issue status %s in_progress` unless your Agent Identity forbids issue status changes; if it does, skip this step.\n", ctx.IssueID)
 	b.WriteString("5. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	if ctx.IsSquadLeader {
-		fmt.Fprintf(b, "6. **Deliver the verified result once** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient and you MUST exit silently): write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path>` with the actual final local command/result and either a passed customer path (method, surface, evidence) or a concrete `not_applicable` reason. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID, ctx.IssueID)
+		fmt.Fprintf(b, "6. **Deliver the verified result once** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient and you MUST exit silently): write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path> --local-command \"<final check command>\" --local-result \"<bounded result summary>\" --customer-path passed|not_applicable` — with `--customer-path passed` also pass `--customer-method browser|cli|api --customer-surface <surface> --customer-evidence \"<observed result>\"`; with `--customer-path not_applicable` also pass `--customer-reason \"<why no customer path applies>\"`. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID, ctx.IssueID)
 	} else {
-		fmt.Fprintf(b, "6. **Deliver the verified result once — this step is mandatory**: write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path>` with the actual final local command/result and either a passed customer path (method, surface, evidence) or a concrete `not_applicable` reason. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID)
+		fmt.Fprintf(b, "6. **Deliver the verified result once — this step is mandatory**: write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path> --local-command \"<final check command>\" --local-result \"<bounded result summary>\" --customer-path passed|not_applicable` — with `--customer-path passed` also pass `--customer-method browser|cli|api --customer-surface <surface> --customer-evidence \"<observed result>\"`; with `--customer-path not_applicable` also pass `--customer-reason \"<why no customer path applies>\"`. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID)
 	}
 	b.WriteString("7. Before exiting: only if this run produced a fact that clears the high bar (important AND likely to be re-read by future runs on this same issue, e.g. a new PR URL or deploy URL), or you noticed a metadata key from entry that is now stale, pin or clear it via `multica issue metadata set`/`delete`. Most runs write nothing here — that is the expected outcome, not a gap. When in doubt, do not write. See the `## Issue Metadata` section above for the full bar.\n")
 	b.WriteString("8. `multica issue deliver` is the only Agent path into `in_review`; if delivery validation fails, keep the issue `in_progress` and fix the missing evidence.\n")
-	b.WriteString("9. If work cannot continue, keep the issue `in_progress` and post one concise comment that states what is waiting, why it matters, and the exact human action or resource needed. Agents must never set `blocked`, `done`, or `cancelled`; those states are human-controlled.\n\n")
+	b.WriteString("9. If work cannot continue, keep the issue `in_progress` and post one concise comment that states what is waiting, why it matters, and the exact human action or resource needed. Agents must never set `blocked`, `done`, or `cancelled`; those states are human-controlled.\n")
+	b.WriteString("10. Runs have a hard turn budget. If you detect you are making no progress after several attempts at the same step, stop retrying, record what you tried and your best hypothesis in a concise issue comment, and end the run cleanly instead of burning the budget.\n\n")
+	// Unattended no-blocking-ask rule (ARG-548 G3). Deliberately references
+	// the Mentions section instead of restating it so the escalation
+	// @mention contract stays single-sourced.
+	b.WriteString("This run is unattended: never stall waiting for an interactive answer — nobody is watching your terminal, and a question asked there is never delivered. When a material decision is missing, either choose the safest reasonable default and record the assumption explicitly in the result comment, or post one blocker comment stating the exact decision needed (following the escalation contract in the `## Mentions` section) and continue with any other work that does not depend on it.\n\n")
+}
+
+// writeAssignmentCommentCatchUp emits step 3 of the assignment workflow.
+// It mirrors the comment-triggered workflow's conditional chain
+// (BuildNewCommentsHint → BuildResumedCommentsHint → server-anchored --since),
+// but assignment tasks usually carry no trigger comment/thread, so the
+// thread-anchored hints may render nothing.
+//
+// Every incremental branch requires BOTH a resumed session and a
+// server-supplied anchor (ARG-548 review ADV-3): a fresh session has no
+// memory for an incremental read to build on, and a resumed session with no
+// NewCommentsSince — old server, first run on the issue, or a lookup failure
+// — cannot know what "already processed" covers. Both cases fall back to the
+// mandatory cold full `--recent 10` read. The server populates the anchor
+// for assignment claims in handler/daemon.go so resumed runs normally hit
+// the incremental path.
+func writeAssignmentCommentCatchUp(b *strings.Builder, ctx TaskContextForEnv) {
+	if ctx.PriorSessionResumed && ctx.NewCommentsSince != "" {
+		if hint := BuildNewCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID, ctx.NewCommentsSince, ctx.NewCommentCount); hint != "" {
+			b.WriteString("3. " + hint)
+			return
+		}
+		fmt.Fprintf(b, "3. You are resuming your prior session on this issue — do not re-read history you already processed. Fetch only new comments since your last run with `multica issue comment list %s --since %s --output json`.\n", ctx.IssueID, ctx.NewCommentsSince)
+		return
+	}
+	if cold := BuildColdCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID); cold != "" {
+		b.WriteString("3. " + cold)
+		return
+	}
+	// Cold start with no trigger thread: keep the full mandatory read.
+	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID)
 }
 
 // writeSubIssueCreation emits the Sub-issue Creation section (compressed
 // to two short paragraphs).
 func writeSubIssueCreation(b *strings.Builder) {
 	b.WriteString("## Single-Issue Execution\n\n")
-	b.WriteString("Complete the objective inside the assigned issue. Do not create sub-issues, sibling issues, replacement issues, staged barriers, or coordination cards. If specialist help is useful, use internal agent/tool delegation and summarize the result on this issue; the owner must continue to see one issue for one objective. The server rejects issue creation and hierarchy changes from issue-bound agent runs.\n\n")
+	b.WriteString("Complete the objective inside the assigned issue. Do not create sub-issues, sibling issues, replacement issues, staged barriers, or coordination cards. If specialist help is useful, use internal agent/tool delegation and summarize the result on this issue; the owner must continue to see one issue for one objective. The server rejects issue creation and hierarchy changes from issue-bound agent runs (agents granted the orchestrator role are exempt for sub-issues under issues assigned to them — see the multica-working-on-issues skill).\n\n")
 }
 
 // writeSkills emits the Skills section listing skill names + descriptions.
@@ -499,7 +615,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 		b.WriteString("**Post exactly ONE comment per run — your final result, before this turn exits.** Do NOT post progress updates, plans, or \"here's what I'm about to do next\" as comments while you work; keep all planning and progress in your own reasoning.\n\n")
 		b.WriteString("Keep comments concise and natural — state the outcome, not the process (good: \"Fixed the login redirect. PR: https://...\"; bad: numbered process logs).\n")
 	default:
-		b.WriteString("⚠️ **Final results MUST be delivered via `multica issue deliver`.** The user does NOT see your terminal output, assistant chat text, or run logs. The command posts exactly one result comment, records the final local/customer-path evidence, and enters `in_review`; do not also call `comment add` or generic `issue status`.\n\n")
+		b.WriteString("⚠️ **Final results MUST be delivered via `multica issue deliver`.** The user does NOT see your terminal output, assistant chat text, or run logs. The command posts exactly one result comment, records the final local/customer-path evidence, and enters `in_review`; do not also call `comment add` or generic `issue status`. Required flags: `--content-file <path>`, `--local-command`, `--local-result`, and `--customer-path passed|not_applicable`; `passed` also requires `--customer-method browser|cli|api`, `--customer-surface`, and `--customer-evidence`; `not_applicable` also requires `--customer-reason`.\n\n")
 		b.WriteString("Keep the handoff concise and natural — state the outcome, evidence, remaining risk, and exact human review action.\n")
 	}
 }
@@ -528,9 +644,24 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 // Requesting User, Task Initiator, Workspace Context, Connected Apps,
 // Workflow, Always Use CLI, Output — are shared by every kind and emitted
 // unconditionally (or gated by their own data preconditions).
+//
+// Orthogonal to the kind matrix, the platform-reference mode (ARG-548
+// Phase 1) selects per section whether the static reference prose renders
+// inline or in .multica/platform.md: in file mode Available Commands shrinks
+// to a pointer + three core lines, Knowledge Layers / Attachments /
+// Connected Apps move to the file entirely, Issue Metadata keeps a
+// one-sentence inline stand-in, and Repositories keeps the URL list but
+// moves the usage prose. Inline mode is byte-identical to the pre-Phase-1
+// brief; quick-create is always inline.
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	var b strings.Builder
 	kind := classifyTask(ctx)
+	// Platform-reference file mode (ARG-548 Phase 1): static reference
+	// sections move to .multica/platform.md and the brief keeps a pointer.
+	// Inline mode keeps the brief byte-identical to the pre-Phase-1 output.
+	// Quick-create never externalizes (usePlatformReferenceFile returns
+	// false for it), so its guardrail brief is identical in both modes.
+	fileMode := usePlatformReferenceFile(ctx)
 
 	writeHeader(&b)
 	writeBackgroundTaskSafetySlim(&b)
@@ -538,11 +669,15 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeRequestingUser(&b, ctx)
 	writeTaskInitiator(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
-	writeConnectedApps(&b, ctx)
+	if !fileMode {
+		writeConnectedApps(&b, ctx)
+	}
 
-	switch kind {
-	case kindQuickCreate:
+	switch {
+	case kind == kindQuickCreate:
 		writeAvailableCommandsQuickCreate(&b)
+	case fileMode:
+		writeAvailableCommandsFileMode(&b, ctx)
 	default:
 		writeAvailableCommands(&b)
 	}
@@ -552,13 +687,21 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	}
 
 	if kind != kindQuickCreate {
-		writeRepositories(&b, ctx)
+		if fileMode {
+			writeRepositoriesFileMode(&b, ctx)
+		} else {
+			writeRepositories(&b, ctx)
+		}
 	}
 
 	if kind.hasIssueContext() {
 		writeProjectContext(&b, ctx)
-		writeKnowledgeLayers(&b)
-		writeIssueMetadata(&b)
+		if fileMode {
+			writeIssueMetadataFileMode(&b, ctx)
+		} else {
+			writeKnowledgeLayers(&b)
+			writeIssueMetadata(&b)
+		}
 	}
 
 	if kind == kindAssignmentTriggered {
@@ -589,7 +732,9 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 
 	if kind == kindCommentTriggered || kind == kindAssignmentTriggered {
 		writeMentions(&b)
-		writeAttachments(&b)
+		if !fileMode {
+			writeAttachments(&b)
+		}
 	}
 
 	writeAlwaysUseCLI(&b)

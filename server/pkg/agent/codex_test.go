@@ -715,6 +715,40 @@ func TestParseCodexSessionFileSubtractsCachedInput(t *testing.T) {
 	}
 }
 
+// TestScanCodexSessionUsageGlobUnsafePath proves the session-log fallback
+// still finds JSONL files when CODEX_HOME contains glob metacharacters —
+// filepath.Glob on such a path silently matched nothing, dropping all Codex
+// token-usage accounting (ARG-548).
+func TestScanCodexSessionUsageGlobUnsafePath(t *testing.T) {
+	// t.Setenv is incompatible with t.Parallel.
+	startTime := time.Now()
+	codexHome := filepath.Join(t.TempDir(), "code[x] home?")
+	dateDir := filepath.Join(codexHome, "sessions",
+		fmt.Sprintf("%04d", startTime.Year()),
+		fmt.Sprintf("%02d", int(startTime.Month())),
+		fmt.Sprintf("%02d", startTime.Day()),
+	)
+	if err := os.MkdirAll(dateDir, 0o755); err != nil {
+		t.Fatalf("mkdir date dir: %v", err)
+	}
+	content := `{"timestamp":"2026-06-12T17:35:37.479Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":300,"output_tokens":40,"reasoning_output_tokens":10,"total_tokens":1040},"model":"gpt-5.5"}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dateDir, "session.jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+
+	got := scanCodexSessionUsage(startTime)
+	if got == nil {
+		t.Fatal("expected usage from glob-unsafe CODEX_HOME path, got nil")
+	}
+	if got.usage.InputTokens != 700 || got.usage.CacheReadTokens != 300 || got.usage.OutputTokens != 50 {
+		t.Fatalf("usage = %+v, want input 700 / cache read 300 / output 50", got.usage)
+	}
+	if got.model != "gpt-5.5" {
+		t.Fatalf("model = %q, want gpt-5.5", got.model)
+	}
+}
+
 func TestCodexRawItemCommandExecution(t *testing.T) {
 	t.Parallel()
 

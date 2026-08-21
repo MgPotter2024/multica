@@ -32,6 +32,7 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `agent skills list` | 760 | reads bindings, no side effect | `multica agent skills list --help` |
 | `agent env get` | 894 | `GET /api/agents/{id}/env` | `multica agent env get --help` |
 | `agent env set` | 929 | `PUT /api/agents/{id}/env` with full `custom_env` map (935, 949) | `multica agent env set --help` |
+| `--role` flag on `agent update` (ARG-548) | 206 | `orchestrator`/`reviewer`/`none`; `runAgentUpdate` maps `none` → `""` and sends `role` only when `Changed` (666–671); after the PUT it reads `role` back from the response and warns on stderr when it differs from the requested value (ADV-11 — an older server without role support silently drops the field); `ROLE` column shown in `agent list` (429, 440) and `agent get` (468, 473) tables | `multica agent update --help` |
 
 Note: the CLI no longer exposes `--from-template`. The agent-template backend
 still exists (registry `server/internal/agenttmpl/`, handler `agent_template.go`,
@@ -65,6 +66,7 @@ only.
 | `UpdateAgent` rejects `custom_env` | 910–913 | if `custom_env` present in body → 400 "use PUT /api/agents/{id}/env (or `multica agent env set`)" |
 | `UpdateAgent` persists / clears `mcp_config` | 944–948, 1060–1061 | Tri-state from the raw body: key omitted → no change; literal `null` → `ClearAgentMcpConfig`; object → replace. No 400 like `custom_env` — `mcp_config` IS updatable here |
 | `description` ≤ 255 on update too | 921–924 | same cap re-checked on update |
+| `role` write gate (ARG-548) | 1322–1368 | Update-only field (`UpdateAgentRequest.Role`, 1097; response `AgentResponse.Role`, 74). Value must be `''`/`orchestrator`/`reviewer` else 400; a REAL change requires a human workspace owner/admin — `X-Actor-Source: task_token`/`cloud_pat` and resolved agent actors get 403; unchanged echo is a tolerated no-op. Persisted via `role = COALESCE(...)` in `UpdateAgent` (`pkg/db/queries/agent.sql:62`); column added by `migrations/183_agent_role.up.sql` (TEXT NOT NULL DEFAULT `''` + CHECK) |
 
 ## Runtime model/thinking discovery — `server/pkg/agent/{models,thinking}.go`
 

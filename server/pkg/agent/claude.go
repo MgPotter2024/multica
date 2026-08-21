@@ -185,9 +185,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if resultUsage := claudeResultUsage(msg, opts.Model); len(resultUsage) > 0 {
 					usage = resultUsage
 				}
-				if msg.IsError {
+				if errText, failed := classifyClaudeResultError(msg, opts.MaxTurns); failed {
 					finalStatus = "failed"
-					finalError = msg.ResultText
+					finalError = errText
 				}
 				closeStdin()
 			case "log":
@@ -534,6 +534,35 @@ type claudeControlRequestPayload struct {
 	Subtype  string          `json:"subtype"`
 	ToolName string          `json:"tool_name,omitempty"`
 	Input    json.RawMessage `json:"input,omitempty"`
+}
+
+// claudeMaxTurnsSubtype is the terminal result-message subtype the Claude
+// Code CLI emits in stream-json output when the run stopped because it hit
+// the --max-turns ceiling. Decoded from claudeSDKMessage.Subtype
+// (`"subtype"`); such results carry is_error=true, num_turns set to the
+// consumed turn count, and usually an empty `result` text.
+const claudeMaxTurnsSubtype = "error_max_turns"
+
+// classifyClaudeResultError inspects a terminal `result` stream-json message
+// and returns the failure text to record plus whether the message marks the
+// run failed. A max-turns termination gets a distinct, diagnosable error
+// instead of the generic (often empty) CLI text: MaxTurns is a runaway kill
+// switch, and an unlabeled "claude execution failed" hides that the run was
+// cut off with work possibly unfinished (ARG-548 review ADV-5). maxTurns is
+// the ceiling the caller requested, used as a fallback when the CLI omits
+// num_turns.
+func classifyClaudeResultError(msg claudeSDKMessage, maxTurns int) (string, bool) {
+	if msg.Subtype == claudeMaxTurnsSubtype {
+		turns := msg.NumTurns
+		if turns == 0 {
+			turns = maxTurns
+		}
+		return fmt.Sprintf("run hit the MaxTurns ceiling (%d turns); work may be unfinished", turns), true
+	}
+	if msg.IsError {
+		return msg.ResultText, true
+	}
+	return "", false
 }
 
 // ── Shared helpers ──

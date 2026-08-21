@@ -541,6 +541,25 @@ func (h *Handler) resolveActor(r *http.Request, userID, workspaceID string) (act
 	return "agent", agentID
 }
 
+// agentActorRole returns the persisted issue-policy role ("", "orchestrator",
+// "reviewer" — see issuepolicy) for an actor resolved by resolveActor.
+// Members, unparsable ids, and lookup failures all yield "" so every error
+// fails closed to the no-extra-capability default.
+func (h *Handler) agentActorRole(ctx context.Context, actorType, actorID string) string {
+	if actorType != "agent" {
+		return ""
+	}
+	agentUUID, err := util.ParseUUID(actorID)
+	if err != nil {
+		return ""
+	}
+	agent, err := h.Queries.GetAgent(ctx, agentUUID)
+	if err != nil {
+		return ""
+	}
+	return agent.Role
+}
+
 func requireUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	userID := requestUserID(r)
 	if userID == "" {

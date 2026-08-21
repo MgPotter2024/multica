@@ -391,14 +391,22 @@ func userMessage(err error, lang Language) string {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		kind := httpErr.Kind()
-		// Validation errors usually carry a useful server-provided message;
-		// surface it instead of the generic line.
-		if kind == KindValidation {
-			if serverMsg := extractServerMessage(httpErr.Body); serverMsg != "" {
+		// Validation and conflict errors usually carry a useful server-provided
+		// message (e.g. "user is already a member of this workspace"); surface
+		// it instead of the generic line. Other kinds fall back to the canned
+		// per-kind copy below.
+		if serverMsg := extractServerMessage(httpErr.Body); serverMsg != "" {
+			switch kind {
+			case KindValidation:
 				if lang == LangZH {
 					return "请求无效：" + serverMsg
 				}
 				return "Invalid request: " + serverMsg
+			case KindConflict:
+				if lang == LangZH {
+					return "冲突：" + serverMsg
+				}
+				return "Conflict: " + serverMsg
 			}
 		}
 		return messageFor(kind, lang)

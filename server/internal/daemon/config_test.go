@@ -12,7 +12,42 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
+
+// ARG-548 Phase 1: MULTICA_PLATFORM_REFERENCE defaults to "file"
+// (externalized .multica/platform.md), accepts "inline" as the rollback
+// switch, and rejects anything else loudly at startup. Mirrors the
+// LoadConfig call: execenv.ParsePlatformReferenceMode over the raw env value.
+func TestPlatformReferenceFromEnv(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv(execenv.PlatformReferenceEnvVar, "")
+		got, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Pin the literal "file" so a silent default change fails this test.
+		if got != execenv.PlatformReferenceFile {
+			t.Fatalf("expected default %q, got %q", execenv.PlatformReferenceFile, got)
+		}
+	})
+	t.Run("inline rollback", func(t *testing.T) {
+		t.Setenv(execenv.PlatformReferenceEnvVar, "inline")
+		got, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != execenv.PlatformReferenceInline {
+			t.Fatalf("expected inline, got %q", got)
+		}
+	})
+	t.Run("garbage rejected", func(t *testing.T) {
+		t.Setenv(execenv.PlatformReferenceEnvVar, "sidecar")
+		if _, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar)); err == nil {
+			t.Fatal("expected error for invalid MULTICA_PLATFORM_REFERENCE")
+		}
+	})
+}
 
 func TestPatternsFromEnv_DefaultsWhenUnset(t *testing.T) {
 	t.Setenv("MULTICA_GC_ARTIFACT_PATTERNS", "")
@@ -35,6 +70,56 @@ func TestPatternsFromEnv_DropsSeparatorBearingEntries(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %v, got %v", want, got)
 	}
+}
+
+// ARG-548 M5: the per-run turn ceiling defaults to 300 (runaway kill switch,
+// raised from 200 in the ARG-548 ADV-5 review so long leader runs are not
+// cut short), honors MULTICA_AGENT_MAX_TURNS, treats 0 as "disabled", and
+// rejects negatives and garbage loudly.
+func TestAgentMaxTurnsFromEnv(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "")
+		got, err := agentMaxTurnsFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Pin the literal 300 so a silent default change fails this test.
+		if got != 300 {
+			t.Fatalf("expected default 300, got %d (DefaultAgentMaxTurns=%d)", got, DefaultAgentMaxTurns)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "37")
+		got, err := agentMaxTurnsFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 37 {
+			t.Fatalf("expected override 37, got %d", got)
+		}
+	})
+	t.Run("zero disables", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "0")
+		got, err := agentMaxTurnsFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 0 {
+			t.Fatalf("expected 0 (disabled), got %d", got)
+		}
+	})
+	t.Run("negative rejected", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "-1")
+		if _, err := agentMaxTurnsFromEnv(); err == nil {
+			t.Fatal("expected error for negative MULTICA_AGENT_MAX_TURNS")
+		}
+	})
+	t.Run("garbage rejected", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "many")
+		if _, err := agentMaxTurnsFromEnv(); err == nil {
+			t.Fatal("expected error for non-integer MULTICA_AGENT_MAX_TURNS")
+		}
+	})
 }
 
 func TestIsSafeAgentName(t *testing.T) {
