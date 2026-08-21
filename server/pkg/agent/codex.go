@@ -1123,15 +1123,21 @@ func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions,
 	}
 
 	startParams := map[string]any{
-		"model":                  nilIfEmpty(opts.Model),
-		"modelProvider":          nil,
-		"profile":                nil,
-		"cwd":                    opts.Cwd,
-		"approvalPolicy":         nil,
-		"sandbox":                nil,
-		"config":                 nil,
-		"baseInstructions":       nil,
-		"developerInstructions":  nilIfEmpty(opts.SystemPrompt),
+		"model":                 nilIfEmpty(opts.Model),
+		"modelProvider":         nil,
+		"profile":               nil,
+		"cwd":                   opts.Cwd,
+		"approvalPolicy":        nil,
+		"sandbox":               nil,
+		"config":                nil,
+		"baseInstructions":      nil,
+		"developerInstructions": nilIfEmpty(opts.SystemPrompt),
+		// compactPrompt is an OVERRIDE of Codex's built-in compaction
+		// (summarization) prompt, not an on/off switch: when nil, Codex core
+		// falls back to codex_prompts::SUMMARIZATION_PROMPT and context
+		// compaction still runs automatically (see openai/codex
+		// codex-rs/core/src/compact.rs). Keep it nil so threads use the
+		// upstream-tuned prompt.
 		"compactPrompt":          nil,
 		"includeApplyPatchTool":  nil,
 		"experimentalRawEvents":  false,
@@ -2048,8 +2054,22 @@ func scanCodexSessionUsage(startTime time.Time) *codexSessionUsage {
 		fmt.Sprintf("%02d", startTime.Day()),
 	)
 
-	files, err := filepath.Glob(filepath.Join(dateDir, "*.jsonl"))
-	if err != nil || len(files) == 0 {
+	// List the literal directory instead of filepath.Glob: glob metacharacters
+	// ([, ], *, ?) in the home/CODEX_HOME path would make the pattern silently
+	// match nothing. os.ReadDir returns entries sorted by name, matching the
+	// order filepath.Glob produced.
+	entries, err := os.ReadDir(dateDir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		files = append(files, filepath.Join(dateDir, entry.Name()))
+	}
+	if len(files) == 0 {
 		return nil
 	}
 
