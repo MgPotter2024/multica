@@ -352,6 +352,156 @@ func TestInjectRuntimeConfigPlatformReferenceFileLifecycle(t *testing.T) {
 	})
 }
 
+// TestFileModeBriefPointerUsesAbsoluteWorkdirPath pins ARG-548 review
+// ADV-10: agents cd into checked-out repos, where a relative
+// `.multica/platform.md` pointer dangles. When the workdir is known (as it
+// always is on the InjectRuntimeConfig path), every file-mode stand-in line
+// must print the absolute workdir-joined path. platform.md CONTENT must stay
+// free of the path — it is byte-stable across runs.
+func TestFileModeBriefPointerUsesAbsoluteWorkdirPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx := platformRefTestCtx(PlatformReferenceFile)
+
+	brief, err := InjectRuntimeConfig(dir, "claude", ctx)
+	if err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	absRef := filepath.Join(dir, ".multica", "platform.md")
+	for _, want := range []string{
+		"Platform command/reference details live in " + absRef + " — read it when you need command flags or platform mechanics beyond this brief.",
+		"Read issue metadata on entry, write sparingly on exit — full guidance in " + absRef + ".",
+		"Available in this workspace — checkout usage in " + absRef + ".",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("file-mode brief missing absolute-path stand-in %q\n---\n%s", want, brief)
+		}
+	}
+	onDisk, err := os.ReadFile(absRef)
+	if err != nil {
+		t.Fatalf("read platform.md: %v", err)
+	}
+	if strings.Contains(string(onDisk), dir) {
+		t.Errorf("platform.md must stay byte-stable and never embed the workdir path\n---\n%s", onDisk)
+	}
+}
+
+// TestInjectRuntimeConfigForEnvLocalDirectory pins ARG-548 review ADV-9: in
+// local_directory mode the workdir is the user's own tree, so
+// .multica/platform.md must go through the sidecar manifest — never
+// overwrite user bytes, degrade the run to the inline brief on collision,
+// and clean up only what we created.
+func TestInjectRuntimeConfigForEnvLocalDirectory(t *testing.T) {
+	t.Parallel()
+
+	newLocalEnv := func(t *testing.T) *Environment {
+		t.Helper()
+		return &Environment{
+			RootDir:        t.TempDir(),
+			WorkDir:        t.TempDir(),
+			LocalDirectory: true,
+		}
+	}
+
+	t.Run("user_owned_platform_md_degrades_to_inline", func(t *testing.T) {
+		t.Parallel()
+		env := newLocalEnv(t)
+		refPath := filepath.Join(env.WorkDir, ".multica", "platform.md")
+		if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		const userContent = "my own notes about this repo\n"
+		if err := os.WriteFile(refPath, []byte(userContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		brief, err := InjectRuntimeConfigForEnv(env, "claude", platformRefTestCtx(PlatformReferenceFile))
+		if err != nil {
+			t.Fatalf("InjectRuntimeConfigForEnv: %v", err)
+		}
+		// The run degrades to the fully-inline brief: no pointer, inline
+		// reference sections present.
+		if strings.Contains(brief, "platform.md") {
+			t.Errorf("degraded brief must not point at platform.md\n---\n%s", brief)
+		}
+		if !strings.Contains(brief, "## Knowledge Layers") {
+			t.Errorf("degraded brief must render the inline reference sections\n---\n%s", brief)
+		}
+		// User bytes untouched by inject AND by cleanup.
+		if got, _ := os.ReadFile(refPath); string(got) != userContent {
+			t.Fatalf("user platform.md was modified: %q", got)
+		}
+		if err := CleanupRuntimeConfig(env.WorkDir, "claude"); err != nil {
+			t.Fatalf("CleanupRuntimeConfig: %v", err)
+		}
+		if got, err := os.ReadFile(refPath); err != nil || string(got) != userContent {
+			t.Fatalf("cleanup must leave the user's platform.md intact, got %q err=%v", got, err)
+		}
+		if err := CleanupSidecars(env.RootDir); err != nil {
+			t.Fatalf("CleanupSidecars: %v", err)
+		}
+		if got, err := os.ReadFile(refPath); err != nil || string(got) != userContent {
+			t.Fatalf("sidecar cleanup must leave the user's platform.md intact, got %q err=%v", got, err)
+		}
+	})
+
+	t.Run("fresh_write_is_manifest_tracked_and_cleaned_up", func(t *testing.T) {
+		t.Parallel()
+		env := newLocalEnv(t)
+		brief, err := InjectRuntimeConfigForEnv(env, "claude", platformRefTestCtx(PlatformReferenceFile))
+		if err != nil {
+			t.Fatalf("InjectRuntimeConfigForEnv: %v", err)
+		}
+		refPath := filepath.Join(env.WorkDir, ".multica", "platform.md")
+		if _, err := os.Stat(refPath); err != nil {
+			t.Fatalf("expected platform.md to be written: %v", err)
+		}
+		if !strings.Contains(brief, refPath) {
+			t.Errorf("file-mode brief must point at the absolute platform.md path %q\n---\n%s", refPath, brief)
+		}
+		m, err := readSidecarManifest(env.RootDir)
+		if err != nil {
+			t.Fatalf("readSidecarManifest: %v", err)
+		}
+		if !m.hasFile(refPath) {
+			t.Fatalf("manifest must record platform.md, got %+v", m)
+		}
+		if err := CleanupRuntimeConfig(env.WorkDir, "claude"); err != nil {
+			t.Fatalf("CleanupRuntimeConfig: %v", err)
+		}
+		if err := CleanupSidecars(env.RootDir); err != nil {
+			t.Fatalf("CleanupSidecars: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(env.WorkDir, ".multica")); !os.IsNotExist(err) {
+			t.Errorf("expected the created .multica dir to be removed on cleanup, stat err=%v", err)
+		}
+	})
+
+	t.Run("reinject_refreshes_owned_file_without_degrading", func(t *testing.T) {
+		t.Parallel()
+		env := newLocalEnv(t)
+		ctx := platformRefTestCtx(PlatformReferenceFile)
+		ctx.PriorSessionResumed = true
+		if _, err := InjectRuntimeConfigForEnv(env, "claude", ctx); err != nil {
+			t.Fatalf("first inject: %v", err)
+		}
+		// The fresh-session retry path re-injects with the resumed flag
+		// cleared; the manifest-recorded file must be refreshed, not refused.
+		ctx.PriorSessionResumed = false
+		brief, err := InjectRuntimeConfigForEnv(env, "claude", ctx)
+		if err != nil {
+			t.Fatalf("re-inject: %v", err)
+		}
+		refPath := filepath.Join(env.WorkDir, ".multica", "platform.md")
+		if !strings.Contains(brief, refPath) {
+			t.Errorf("re-injected brief degraded to inline; must stay in file mode\n---\n%s", brief)
+		}
+		if onDisk, err := os.ReadFile(refPath); err != nil || string(onDisk) != buildPlatformReferenceContent(ctx) {
+			t.Errorf("re-injected platform.md must carry the current rendering, err=%v", err)
+		}
+	})
+}
+
 // TestPlatformReferenceBriefSizeDelta documents the point of the split: the
 // file-mode brief must be materially smaller than the inline brief for a
 // representative issue-run context. Logs exact byte counts for release notes.

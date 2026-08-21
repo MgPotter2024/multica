@@ -970,6 +970,62 @@ func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 	}
 }
 
+// TestClassifyClaudeResultError pins ARG-548 review ADV-5: a run terminated
+// by the --max-turns ceiling emits a `result` message with subtype
+// "error_max_turns" (is_error=true, num_turns set, usually empty result
+// text), and must surface a distinct, diagnosable error instead of the
+// generic empty CLI text. Other error results keep their CLI-provided text.
+func TestClassifyClaudeResultError(t *testing.T) {
+	t.Parallel()
+
+	// Synthetic stream-json result frames, decoded exactly as Execute does.
+	decode := func(line string) claudeSDKMessage {
+		var msg claudeSDKMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			t.Fatalf("unmarshal synthetic result message: %v", err)
+		}
+		return msg
+	}
+
+	t.Run("max_turns_is_distinct", func(t *testing.T) {
+		t.Parallel()
+		msg := decode(`{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s1","num_turns":300,"result":""}`)
+		errText, failed := classifyClaudeResultError(msg, 300)
+		if !failed {
+			t.Fatal("expected max-turns result to classify as failed")
+		}
+		if !strings.Contains(errText, "MaxTurns ceiling (300 turns)") || !strings.Contains(errText, "work may be unfinished") {
+			t.Fatalf("expected distinct max-turns error, got %q", errText)
+		}
+	})
+
+	t.Run("max_turns_missing_num_turns_falls_back_to_ceiling", func(t *testing.T) {
+		t.Parallel()
+		msg := decode(`{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s1"}`)
+		errText, failed := classifyClaudeResultError(msg, 42)
+		if !failed || !strings.Contains(errText, "(42 turns)") {
+			t.Fatalf("expected fallback to the requested ceiling, got failed=%v %q", failed, errText)
+		}
+	})
+
+	t.Run("other_error_keeps_cli_text", func(t *testing.T) {
+		t.Parallel()
+		msg := decode(`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}`)
+		errText, failed := classifyClaudeResultError(msg, 300)
+		if !failed || errText != "boom" {
+			t.Fatalf("expected CLI error text to pass through, got failed=%v %q", failed, errText)
+		}
+	})
+
+	t.Run("success_is_not_failed", func(t *testing.T) {
+		t.Parallel()
+		msg := decode(`{"type":"result","subtype":"success","is_error":false,"result":"done","num_turns":12}`)
+		if errText, failed := classifyClaudeResultError(msg, 300); failed || errText != "" {
+			t.Fatalf("expected success result to stay non-failed, got failed=%v %q", failed, errText)
+		}
+	})
+}
+
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(v)

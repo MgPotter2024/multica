@@ -195,9 +195,15 @@ const (
 	cmdBulletIssueDeliver     = "- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [--customer-method browser|cli|api --customer-surface <surface> --customer-evidence <summary> | --customer-reason <reason>] [--parent <comment-id>]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`. `--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required; `--customer-path passed` also requires `--customer-method`, `--customer-surface`, and `--customer-evidence`; `--customer-path not_applicable` also requires `--customer-reason`.\n"
 )
 
-// platformReferencePointer is the mandatory one-line pointer the file-mode
-// brief carries in place of the externalized reference sections.
-const platformReferencePointer = "Platform command/reference details live in .multica/platform.md — read it when you need command flags or platform mechanics beyond this brief.\n"
+// writePlatformReferencePointer emits the mandatory one-line pointer the
+// file-mode brief carries in place of the externalized reference sections.
+// The printed path is the absolute workdir-joined location when the workdir
+// is known (agents routinely cd into checked-out repos, where a relative
+// `.multica/platform.md` dangles — ARG-548 review ADV-10); bare renders
+// (tests, previews with no workdir) keep the relative form.
+func writePlatformReferencePointer(b *strings.Builder, ctx TaskContextForEnv) {
+	fmt.Fprintf(b, "Platform command/reference details live in %s — read it when you need command flags or platform mechanics beyond this brief.\n", platformReferenceDisplayPath(ctx))
+}
 
 // writeAvailableCommands emits the slim Available Commands section
 // (~2.4k chars vs legacy ~4.4k). Every test-asserted substring is
@@ -251,9 +257,9 @@ func writeAvailableCommandsQuickCreate(b *strings.Builder) {
 // Everything else in the full list is static reference and lives in the
 // file. The three kept bullets are shared constants with
 // writeAvailableCommands so the two modes cannot drift.
-func writeAvailableCommandsFileMode(b *strings.Builder) {
+func writeAvailableCommandsFileMode(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Available Commands\n\n")
-	b.WriteString(platformReferencePointer)
+	writePlatformReferencePointer(b, ctx)
 	b.WriteString("\n")
 	b.WriteString("### Core\n")
 	b.WriteString(cmdBulletIssueGet)
@@ -267,9 +273,9 @@ func writeAvailableCommandsFileMode(b *strings.Builder) {
 // kept so the workflow steps' "See the `## Issue Metadata` section above"
 // references stay resolvable; the full discipline text lives in
 // `.multica/platform.md`.
-func writeIssueMetadataFileMode(b *strings.Builder) {
+func writeIssueMetadataFileMode(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Issue Metadata\n\n")
-	b.WriteString("Read issue metadata on entry, write sparingly on exit — full guidance in .multica/platform.md.\n\n")
+	fmt.Fprintf(b, "Read issue metadata on entry, write sparingly on exit — full guidance in %s.\n\n", platformReferenceDisplayPath(ctx))
 }
 
 // writeRepositoriesFileMode emits the Repositories section for
@@ -281,7 +287,7 @@ func writeRepositoriesFileMode(b *strings.Builder, ctx TaskContextForEnv) {
 		return
 	}
 	b.WriteString("## Repositories\n\n")
-	b.WriteString("Available in this workspace — checkout usage in .multica/platform.md.\n\n")
+	fmt.Fprintf(b, "Available in this workspace — checkout usage in %s.\n\n", platformReferenceDisplayPath(ctx))
 	for _, repo := range ctx.Repos {
 		if repo.Description != "" {
 			fmt.Fprintf(b, "- %s — %s\n", repo.URL, repo.Description)
@@ -468,11 +474,12 @@ func writeWorkflowComment(b *strings.Builder, provider string, ctx TaskContextFo
 
 // writeWorkflowAssignment emits the assignment-triggered workflow.
 //
-// Step 3 (comment catch-up) is conditional (ARG-548 M3): warm and resumed
-// runs get an incremental read through the same hint chain the
-// comment-triggered workflow uses, so an agent resuming its own session does
-// not re-read history it already processed. Cold starts keep the mandatory
-// full `--recent 10` read unchanged — see writeAssignmentCommentCatchUp.
+// Step 3 (comment catch-up) is conditional (ARG-548 M3): a run that resumes
+// its prior session AND has a server-supplied anchor gets an incremental read
+// through the same hint chain the comment-triggered workflow uses, so it does
+// not re-read history it already processed. Everything else — cold starts,
+// fresh sessions, resumed sessions with no anchor — keeps the mandatory full
+// `--recent 10` read unchanged — see writeAssignmentCommentCatchUp.
 func writeWorkflowAssignment(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("You are responsible for managing the issue status throughout your work, unless your Agent Identity forbids issue status changes.\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand your task\n", ctx.IssueID)
@@ -497,26 +504,25 @@ func writeWorkflowAssignment(b *strings.Builder, ctx TaskContextForEnv) {
 
 // writeAssignmentCommentCatchUp emits step 3 of the assignment workflow.
 // It mirrors the comment-triggered workflow's conditional chain
-// (BuildNewCommentsHint → BuildResumedCommentsHint → BuildColdCommentsHint),
-// but assignment tasks often carry no trigger comment/thread, so the
-// thread-anchored hints may render nothing. In that case a resumed session
-// still gets an incremental `--since` read instead of a forced full re-read,
-// while a cold start keeps today's mandatory full `--recent 10` read.
+// (BuildNewCommentsHint → BuildResumedCommentsHint → server-anchored --since),
+// but assignment tasks usually carry no trigger comment/thread, so the
+// thread-anchored hints may render nothing.
+//
+// Every incremental branch requires BOTH a resumed session and a
+// server-supplied anchor (ARG-548 review ADV-3): a fresh session has no
+// memory for an incremental read to build on, and a resumed session with no
+// NewCommentsSince — old server, first run on the issue, or a lookup failure
+// — cannot know what "already processed" covers. Both cases fall back to the
+// mandatory cold full `--recent 10` read. The server populates the anchor
+// for assignment claims in handler/daemon.go so resumed runs normally hit
+// the incremental path.
 func writeAssignmentCommentCatchUp(b *strings.Builder, ctx TaskContextForEnv) {
-	if hint := BuildNewCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID, ctx.NewCommentsSince, ctx.NewCommentCount); hint != "" {
-		b.WriteString("3. " + hint)
-		return
-	}
-	if ctx.PriorSessionResumed {
-		if resumed := BuildResumedCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID); resumed != "" {
-			b.WriteString("3. " + resumed)
+	if ctx.PriorSessionResumed && ctx.NewCommentsSince != "" {
+		if hint := BuildNewCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID, ctx.NewCommentsSince, ctx.NewCommentCount); hint != "" {
+			b.WriteString("3. " + hint)
 			return
 		}
-		if ctx.NewCommentsSince != "" {
-			fmt.Fprintf(b, "3. You are resuming your prior session on this issue — do not re-read history you already processed. Fetch only new comments since your last run with `multica issue comment list %s --since %s --output json`.\n", ctx.IssueID, ctx.NewCommentsSince)
-			return
-		}
-		fmt.Fprintf(b, "3. You are resuming your prior session on this issue — do not re-read history you already processed. Fetch only new comments since your last run with `multica issue comment list %s --since <RFC3339> --output json`, using your own knowledge of when your last run happened as the `--since` anchor.\n", ctx.IssueID)
+		fmt.Fprintf(b, "3. You are resuming your prior session on this issue — do not re-read history you already processed. Fetch only new comments since your last run with `multica issue comment list %s --since %s --output json`.\n", ctx.IssueID, ctx.NewCommentsSince)
 		return
 	}
 	if cold := BuildColdCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID); cold != "" {
@@ -531,7 +537,7 @@ func writeAssignmentCommentCatchUp(b *strings.Builder, ctx TaskContextForEnv) {
 // to two short paragraphs).
 func writeSubIssueCreation(b *strings.Builder) {
 	b.WriteString("## Single-Issue Execution\n\n")
-	b.WriteString("Complete the objective inside the assigned issue. Do not create sub-issues, sibling issues, replacement issues, staged barriers, or coordination cards. If specialist help is useful, use internal agent/tool delegation and summarize the result on this issue; the owner must continue to see one issue for one objective. The server rejects issue creation and hierarchy changes from issue-bound agent runs.\n\n")
+	b.WriteString("Complete the objective inside the assigned issue. Do not create sub-issues, sibling issues, replacement issues, staged barriers, or coordination cards. If specialist help is useful, use internal agent/tool delegation and summarize the result on this issue; the owner must continue to see one issue for one objective. The server rejects issue creation and hierarchy changes from issue-bound agent runs (agents granted the orchestrator role are exempt for sub-issues under issues assigned to them — see the multica-working-on-issues skill).\n\n")
 }
 
 // writeSkills emits the Skills section listing skill names + descriptions.
@@ -671,7 +677,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	case kind == kindQuickCreate:
 		writeAvailableCommandsQuickCreate(&b)
 	case fileMode:
-		writeAvailableCommandsFileMode(&b)
+		writeAvailableCommandsFileMode(&b, ctx)
 	default:
 		writeAvailableCommands(&b)
 	}
@@ -691,7 +697,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	if kind.hasIssueContext() {
 		writeProjectContext(&b, ctx)
 		if fileMode {
-			writeIssueMetadataFileMode(&b)
+			writeIssueMetadataFileMode(&b, ctx)
 		} else {
 			writeKnowledgeLayers(&b)
 			writeIssueMetadata(&b)

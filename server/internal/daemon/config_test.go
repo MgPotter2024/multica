@@ -72,9 +72,10 @@ func TestPatternsFromEnv_DropsSeparatorBearingEntries(t *testing.T) {
 	}
 }
 
-// ARG-548 M5: the per-run turn ceiling defaults to 200 (runaway kill switch),
-// honors MULTICA_AGENT_MAX_TURNS, treats 0 as "disabled", and rejects
-// negatives and garbage loudly.
+// ARG-548 M5: the per-run turn ceiling defaults to 300 (runaway kill switch,
+// raised from 200 in the ARG-548 ADV-5 review so long leader runs are not
+// cut short), honors MULTICA_AGENT_MAX_TURNS, treats 0 as "disabled", and
+// rejects negatives and garbage loudly.
 func TestAgentMaxTurnsFromEnv(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		t.Setenv("MULTICA_AGENT_MAX_TURNS", "")
@@ -82,9 +83,9 @@ func TestAgentMaxTurnsFromEnv(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// Pin the literal 200 so a silent default change fails this test.
-		if got != 200 {
-			t.Fatalf("expected default 200, got %d (DefaultAgentMaxTurns=%d)", got, DefaultAgentMaxTurns)
+		// Pin the literal 300 so a silent default change fails this test.
+		if got != 300 {
+			t.Fatalf("expected default 300, got %d (DefaultAgentMaxTurns=%d)", got, DefaultAgentMaxTurns)
 		}
 	})
 	t.Run("env override", func(t *testing.T) {
