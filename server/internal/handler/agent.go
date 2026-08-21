@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/issuepolicy"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -67,6 +68,10 @@ type AgentResponse struct {
 	Status             string                     `json:"status"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
 	Model              string                     `json:"model"`
+	// Role is the agent-level issue-policy role (ARG-548): "" (default, no
+	// extra capability), "orchestrator", or "reviewer". Set by human
+	// workspace owners/admins only; see UpdateAgent.
+	Role string `json:"role"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -169,6 +174,7 @@ func agentToResponse(a db.Agent) AgentResponse {
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
 		Model:                    a.Model.String,
+		Role:                     a.Role,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
@@ -1083,6 +1089,12 @@ type UpdateAgentRequest struct {
 	Status             *string                     `json:"status"`
 	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
 	Model              *string                     `json:"model"`
+	// Role is the agent-level issue-policy role (ARG-548 M9/M10): "",
+	// "orchestrator", or "reviewer". Privilege-escalation boundary: a real
+	// change is accepted only from a HUMAN workspace owner/admin — machine
+	// credentials and agent actors are rejected in the handler, so an agent
+	// can never set roles (its own or others') through this endpoint.
+	Role *string `json:"role"`
 	// ThinkingLevel is treated as a tri-state per-MUL-2339:
 	//   - field omitted → no change (leave existing value alone)
 	//   - field present with "" → explicit clear (use runtime default)
@@ -1305,6 +1317,54 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
+	}
+
+	// Agent-level issue-policy role (ARG-548 M9/M10). This column grants the
+	// orchestrator / reviewer issue-policy capabilities, so writing it is a
+	// privilege-escalation boundary:
+	//
+	//   1. Machine credentials are rejected outright. X-Actor-Source is
+	//      server-set only (the auth middleware strips client values before
+	//      stamping mat_/mcn_ tokens — see actor_guards.go), and resolveActor
+	//      covers the legacy X-Agent-ID/X-Task-ID header path. An agent must
+	//      never set roles — its own or another agent's.
+	//   2. Only HUMAN workspace owners/admins may change it — stricter than
+	//      canManageAgent above, which also admits the (member) agent owner.
+	//
+	// A no-op echo of the current value is tolerated (dropped) so PATCH-as-PUT
+	// clients that round-trip the whole record keep working, mirroring the
+	// permission_mode stance.
+	if _, hasRole := rawFields["role"]; hasRole {
+		newRole := ""
+		if req.Role != nil {
+			newRole = strings.ToLower(strings.TrimSpace(*req.Role))
+		}
+		switch newRole {
+		case "", issuepolicy.RoleOrchestrator, issuepolicy.RoleReviewer:
+		default:
+			writeError(w, http.StatusBadRequest, "role must be one of '', 'orchestrator', 'reviewer'")
+			return
+		}
+		if newRole != existing.Role {
+			switch r.Header.Get("X-Actor-Source") {
+			case "task_token", "cloud_pat":
+				writeError(w, http.StatusForbidden, "agent roles can only be changed by a human workspace owner or admin")
+				return
+			}
+			if actorType, _ := h.resolveActor(r, requestUserID(r), uuidToString(existing.WorkspaceID)); actorType == "agent" {
+				writeError(w, http.StatusForbidden, "agent roles can only be changed by a human workspace owner or admin")
+				return
+			}
+			roleMember, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
+			if !ok {
+				return
+			}
+			if !roleAllowed(roleMember.Role, "owner", "admin") {
+				writeError(w, http.StatusForbidden, "agent roles can only be changed by a human workspace owner or admin")
+				return
+			}
+			params.Role = pgtype.Text{String: newRole, Valid: true}
+		}
 	}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: *req.Name, Valid: true}

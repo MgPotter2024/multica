@@ -81,6 +81,7 @@ The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 | `mcp_config` | `agent.mcp_config` (raw JSON) | CLI checks it is a JSON object or `null`; server stores as-is. At create, literal `null` is dropped (no-op); at update, `null` clears the column | daemon → provider (MCP servers) — **runtime-consumed**; redacted on read |
 | `visibility` | `agent.visibility` | — | access control; defaults to `private`; gates who can read/route a private agent (e.g. a private squad leader) — NOT the runtime prompt |
 | `max_concurrent_tasks` | `agent.max_concurrent_tasks` | — | scheduler task cap; defaults to `6` |
+| `role` | `agent.role` (default `''`) | must be `''`/`orchestrator`/`reviewer` (400); **update-only** — not accepted at create | issue-policy gates (ARG-548): `orchestrator` may create/re-parent sub-issues under issues assigned to it; `reviewer` may move issues it is NOT assigned to from `in_review` to `done` |
 
 Defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
 `custom_args` → `[]`, `visibility` → `private`, `max_concurrent_tasks` → `6`
@@ -104,6 +105,15 @@ model catalog). It forwards the token, the server applies the provider's
 fixed-enum or safe-token gate, and the daemon performs the exact model/level
 check. A runtime whose provider has no thinking concept rejects any non-empty
 value with a 400.
+
+`role` is a privilege-escalation boundary, not ordinary metadata. It is set
+with `multica agent update --role orchestrator|reviewer|none` (`none` clears to
+`''`) and shown in `agent get`/`agent list`. A real change is accepted only
+from a HUMAN workspace owner/admin: machine credentials (`mat_`/`mcn_`) and
+agent actors get 403, so an agent can never grant a role — its own or another
+agent's. Echoing the current value back unchanged is a tolerated no-op for
+PATCH-as-PUT clients. What each role unlocks on issues is documented in the
+`multica-working-on-issues` skill.
 
 ### model vs custom_args
 
@@ -228,6 +238,9 @@ State-changing (require an explicit instruction — do not run speculatively):
   unknown provider-level literal is — model-specific gaps fail at run time.
 - "`set` and `add` are interchangeable for skills." `set` replaces all
   bindings; using it when you meant `add` silently removes capabilities.
+- "An agent can set its own `role`." It cannot — role writes from machine
+  credentials or agent actors are rejected with 403; only a human workspace
+  owner/admin can change it.
 
 ## References
 

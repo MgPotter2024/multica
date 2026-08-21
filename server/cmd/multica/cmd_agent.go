@@ -203,6 +203,7 @@ func init() {
 	agentUpdateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentUpdateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
 	agentUpdateCmd.Flags().String("status", "", "New status")
+	agentUpdateCmd.Flags().String("role", "", "Agent-level issue-policy role: orchestrator (create/re-parent sub-issues under issues assigned to this agent), reviewer (move issues it is NOT assigned to from in_review to done), or none to clear. Only a human workspace owner/admin can change it; agent-authenticated calls are rejected server-side.")
 	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent tasks")
 	agentUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -425,7 +426,7 @@ func runAgentList(cmd *cobra.Command, _ []string) error {
 		return cli.PrintJSON(os.Stdout, agents)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "ARCHIVED"}
+	headers := []string{"ID", "NAME", "STATUS", "ROLE", "RUNTIME", "ARCHIVED"}
 	rows := make([][]string, 0, len(agents))
 	for _, a := range agents {
 		archived := ""
@@ -436,6 +437,7 @@ func runAgentList(cmd *cobra.Command, _ []string) error {
 			strVal(a, "id"),
 			strVal(a, "name"),
 			strVal(a, "status"),
+			strVal(a, "role"),
 			strVal(a, "runtime_mode"),
 			archived,
 		})
@@ -463,11 +465,12 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, agent)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION"}
+	headers := []string{"ID", "NAME", "STATUS", "ROLE", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION"}
 	rows := [][]string{{
 		strVal(agent, "id"),
 		strVal(agent, "name"),
 		strVal(agent, "status"),
+		strVal(agent, "role"),
 		strVal(agent, "runtime_mode"),
 		strVal(agent, "visibility"),
 		strVal(agent, "avatar_url"),
@@ -658,6 +661,15 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("status")
 		body["status"] = v
 	}
+	// role: "none" maps to the empty string (clear). The server validates the
+	// value and enforces the human owner/admin gate (ARG-548).
+	if cmd.Flags().Changed("role") {
+		v, _ := cmd.Flags().GetString("role")
+		if strings.EqualFold(strings.TrimSpace(v), "none") {
+			v = ""
+		}
+		body["role"] = v
+	}
 	if cmd.Flags().Changed("max-concurrent-tasks") {
 		v, _ := cmd.Flags().GetInt32("max-concurrent-tasks")
 		body["max_concurrent_tasks"] = v
@@ -669,7 +681,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --thinking-level, --custom-args, --mcp-config, --visibility, --status, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
+		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --thinking-level, --custom-args, --mcp-config, --visibility, --status, --role, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
 	}
 
 	ctx, cancel := cli.APIContext(context.Background())
