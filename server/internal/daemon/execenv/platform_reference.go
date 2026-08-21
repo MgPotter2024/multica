@@ -47,6 +47,12 @@ const (
 	// PlatformReferenceRelPath is the workdir-relative path (slash form) of
 	// the externalized platform reference file.
 	PlatformReferenceRelPath = ".multica/platform.md"
+
+	// platformReferenceHeader is the first line of every Multica-rendered
+	// platform.md. Cleanup uses it as the ownership guard: a file at the
+	// reference path that does not start with this header is user content
+	// (the local_directory degrade-to-inline case) and is never deleted.
+	platformReferenceHeader = "# Multica Platform Reference\n"
 )
 
 // ParsePlatformReferenceMode validates a raw MULTICA_PLATFORM_REFERENCE
@@ -106,7 +112,8 @@ func usePlatformReferenceFile(ctx TaskContextForEnv) bool {
 // TestPlatformReferenceContentByteStable pins this.
 func buildPlatformReferenceContent(ctx TaskContextForEnv) string {
 	var b strings.Builder
-	b.WriteString("# Multica Platform Reference\n\n")
+	b.WriteString(platformReferenceHeader)
+	b.WriteString("\n")
 	b.WriteString("Static reference for the Multica platform: CLI command flags and platform mechanics. The runtime brief (the Multica-managed section of CLAUDE.md / AGENTS.md) carries the task workflow and behavior contracts; on any conflict the runtime brief wins.\n\n")
 	writeAvailableCommands(&b)
 	writePlatformRepositoriesUsage(&b)
@@ -132,11 +139,25 @@ func platformReferencePath(workDir string) string {
 	return filepath.Join(workDir, filepath.FromSlash(PlatformReferenceRelPath))
 }
 
+// platformReferenceDisplayPath returns the path the runtime brief should
+// print when pointing at the platform reference file: the absolute
+// workdir-joined path when the workdir is known, else the relative form.
+// Only the per-run brief prints this — platform.md content itself must stay
+// byte-stable and never embeds a path (ARG-548 review ADV-10).
+func platformReferenceDisplayPath(ctx TaskContextForEnv) string {
+	if ctx.WorkDir != "" {
+		return platformReferencePath(ctx.WorkDir)
+	}
+	return PlatformReferenceRelPath
+}
+
 // writePlatformReferenceFile writes `.multica/platform.md` into the workdir,
 // overwriting any previous copy so reused workdirs always carry the current
-// rendering. The `.multica` directory usually already exists (the daemon task
-// marker lives there); MkdirAll is defensive for prompt-only providers whose
-// Prepare path may not have created it yet.
+// rendering. Cloud-mode only: the workdir is daemon scratch, so a blind
+// overwrite can never destroy user bytes. local_directory tasks go through
+// writePlatformReferenceFileTracked instead. The `.multica` directory usually
+// already exists (the daemon task marker lives there); MkdirAll is defensive
+// for prompt-only providers whose Prepare path may not have created it yet.
 func writePlatformReferenceFile(workDir string, ctx TaskContextForEnv) error {
 	path := platformReferencePath(workDir)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -148,13 +169,80 @@ func writePlatformReferenceFile(workDir string, ctx TaskContextForEnv) error {
 	return nil
 }
 
+// writePlatformReferenceFileTracked is the local_directory variant of
+// writePlatformReferenceFile: the workdir is the user's own tree, so the
+// write follows the sidecar-manifest contract (see context.go recordWriteFile
+// / CleanupSidecars) instead of a blind overwrite (ARG-548 review ADV-9).
+//
+//   - Path free → write it and record it (plus any created `.multica`
+//     ancestor) in the manifest at envRoot so CleanupSidecars restores the
+//     user's tree exactly, removing the file/dir only if we created them.
+//   - Path occupied and recorded in this task's manifest → a re-render in the
+//     same task lifetime (e.g. the fresh-session retry re-inject); refresh in
+//     place — the bytes are ours.
+//   - Path occupied and NOT ours → user content; refuse with errPathPreExists
+//     so the caller degrades this run to the fully-inline brief.
+func writePlatformReferenceFileTracked(workDir, envRoot string, ctx TaskContextForEnv) error {
+	m, err := readSidecarManifest(envRoot)
+	if err != nil {
+		return err
+	}
+	prevDirs, prevFiles := len(m.Dirs), len(m.Files)
+	// Persist any manifest growth even when a later step fails, so a created
+	// directory or file is never left untracked on disk.
+	defer func() {
+		if len(m.Dirs) != prevDirs || len(m.Files) != prevFiles {
+			_ = writeSidecarManifest(envRoot, m)
+		}
+	}()
+
+	path := platformReferencePath(workDir)
+	if err := recordMkdirAll(filepath.Dir(path), 0o755, m); err != nil {
+		return fmt.Errorf("create platform reference dir: %w", err)
+	}
+	content := []byte(buildPlatformReferenceContent(ctx))
+	_, statErr := os.Lstat(path)
+	switch {
+	case statErr == nil:
+		if !m.hasFile(path) {
+			return fmt.Errorf("%w: %s", errPathPreExists, path)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			return fmt.Errorf("write platform reference: %w", err)
+		}
+		return nil
+	case errors.Is(statErr, fs.ErrNotExist):
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			return fmt.Errorf("write platform reference: %w", err)
+		}
+		m.Files = append(m.Files, path)
+		return nil
+	default:
+		return fmt.Errorf("stat platform reference: %w", statErr)
+	}
+}
+
 // removePlatformReferenceFile deletes `.multica/platform.md` from the
-// workdir. Missing file is a no-op — the task may have run in inline mode or
-// as quick-create. Called from CleanupRuntimeConfig BEFORE CleanupSidecars so
-// the manifest-driven rmdir of `.multica` in the local_directory flow finds
-// the directory empty of Multica-owned files.
+// workdir when — and only when — Multica rendered it: the ownership guard is
+// the byte-stable platformReferenceHeader first line. A user-owned file at
+// the same path (the local_directory degrade-to-inline case) is left intact
+// (ARG-548 review ADV-9). Missing file is a no-op — the task may have run in
+// inline mode or as quick-create. Called from CleanupRuntimeConfig BEFORE
+// CleanupSidecars so the manifest-driven rmdir of `.multica` in the
+// local_directory flow finds the directory empty of Multica-owned files.
 func removePlatformReferenceFile(workDir string) error {
-	if err := os.Remove(platformReferencePath(workDir)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	path := platformReferencePath(workDir)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read platform reference for cleanup: %w", err)
+	}
+	if !strings.HasPrefix(string(data), platformReferenceHeader) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove platform reference: %w", err)
 	}
 	return nil

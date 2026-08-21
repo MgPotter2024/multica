@@ -30,13 +30,15 @@ const (
 	// hard ceiling for cost/resource control can set MULTICA_AGENT_TIMEOUT.
 	DefaultAgentTimeout = 0
 	// DefaultAgentMaxTurns caps the number of agent turns in a single run.
-	// 200 is a deliberately generous runaway-kill ceiling, not a normal-run
+	// 300 is a deliberately generous runaway-kill ceiling, not a normal-run
 	// budget: healthy runs finish far below it, and the cap exists so a run
-	// stuck retrying the same step cannot burn tokens forever. Set
-	// MULTICA_AGENT_MAX_TURNS to override; 0 disables the ceiling. Only
-	// backends with a --max-turns flag (claude, codebuddy) enforce it;
-	// other adapters ignore the option.
-	DefaultAgentMaxTurns                  = 200
+	// stuck retrying the same step cannot burn tokens forever. Raised from
+	// 200 after ARG-548 review ADV-5: legitimate long leader runs
+	// (delegation, polling, multi-batch checks) were at risk of hitting the
+	// old ceiling. Set MULTICA_AGENT_MAX_TURNS to override; 0 disables the
+	// ceiling. Only backends with a --max-turns flag (claude, codebuddy)
+	// enforce it; other adapters ignore the option.
+	DefaultAgentMaxTurns                  = 300
 	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
 	// DefaultAgentIdleWatchdog is the per-task safety net that force-stops a
 	// run when the backend has emitted no message for this long AND its

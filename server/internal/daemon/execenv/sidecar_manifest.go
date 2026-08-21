@@ -68,6 +68,38 @@ type sidecarManifest struct {
 	Dirs  []string `json:"dirs,omitempty"`
 }
 
+// hasFile reports whether the manifest already records path as a file this
+// task created. Paths are compared in cleaned form; the manifest only ever
+// stores absolute paths, so no base-dir resolution is needed.
+func (m *sidecarManifest) hasFile(path string) bool {
+	clean := filepath.Clean(path)
+	for _, f := range m.Files {
+		if filepath.Clean(f) == clean {
+			return true
+		}
+	}
+	return false
+}
+
+// readSidecarManifest loads the manifest persisted under envRoot. A missing
+// file yields an empty manifest (older build, or Prepare has not written one
+// yet); unreadable or unparseable content is an error — callers that need
+// ownership answers must not guess without it.
+func readSidecarManifest(envRoot string) (*sidecarManifest, error) {
+	data, err := os.ReadFile(filepath.Join(envRoot, sidecarManifestFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return &sidecarManifest{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read sidecar manifest: %w", err)
+	}
+	var m sidecarManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parse sidecar manifest: %w", err)
+	}
+	return &m, nil
+}
+
 // recordMkdirAll behaves like os.MkdirAll(path, perm) but additionally
 // records every parent directory it had to create (skipping any that
 // already existed) into m so CleanupSidecars can rmdir them later. The

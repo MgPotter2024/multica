@@ -1789,6 +1789,39 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// ARG-548 review ADV-3: assignment claims (no trigger comment) never
+		// populated NewCommentsSince/NewCommentCount — the lookup above only
+		// runs inside the trigger-comment branch — while the assignment
+		// brief's resumed-session step told the agent to fetch "comments
+		// since your last run". Populate the same server-side anchor here so
+		// a resumed assignment run gets a real `--since` value instead of
+		// guessing; with no prior run the anchor stays empty and the brief
+		// falls back to the mandatory cold `--recent 10` read. The anchor is
+		// set even at zero new comments (the resumed brief needs it either
+		// way); the count query reuses the trigger-branch shape with the
+		// task's own UUID as the anchor id — task ids never collide with
+		// comment ids, so no comment is excluded, and the query needs a
+		// non-NULL anchor (`id <> NULL` would null out the predicate).
+		// Best-effort like the trigger branch: DB errors leave the hint
+		// suppressed.
+		if !effectiveTriggerUUID.Valid {
+			if startedAt, err := h.Queries.GetLastTaskStartedAtForIssueAndAgent(r.Context(), db.GetLastTaskStartedAtForIssueAndAgentParams{
+				AgentID: task.AgentID,
+				IssueID: task.IssueID,
+			}); err == nil && startedAt.Valid {
+				resp.NewCommentsSince = startedAt.Time.UTC().Format(time.RFC3339)
+				if cnt, err := h.Queries.CountNewCommentsSince(r.Context(), db.CountNewCommentsSinceParams{
+					AnchorID:    task.ID,
+					IssueID:     task.IssueID,
+					WorkspaceID: runtime.WorkspaceID,
+					Since:       startedAt,
+					AuthorID:    task.AgentID,
+				}); err == nil && cnt > 0 {
+					resp.NewCommentCount = int(cnt)
+				}
+			}
+		}
+
 		if !supportsCoalescedComments {
 			// Legacy daemons ignore the structured coalesced fields. Fold every
 			// successfully loaded comment into the one trigger field they already

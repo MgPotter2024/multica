@@ -3681,7 +3681,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, taskLog)
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	// The env-aware variant routes the platform.md sidecar through the
+	// manifest for local_directory tasks (ARG-548 review ADV-9).
+	runtimeBrief, err := execenv.InjectRuntimeConfigForEnv(env, provider, taskCtx)
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -3900,7 +3902,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ThreadName: deriveTaskThreadName(task),
 		Timeout:    d.cfg.AgentTimeout,
 		// MaxTurns is a deliberately generous runaway-kill ceiling (default
-		// 200), not a normal-run budget. Backends without a --max-turns flag
+		// 300), not a normal-run budget. Backends without a --max-turns flag
 		// ignore it; 0 disables the ceiling entirely.
 		MaxTurns:                  d.cfg.AgentMaxTurns,
 		SemanticInactivityTimeout: d.cfg.CodexSemanticInactivityTimeout,
@@ -3960,6 +3962,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		firstUsage := result.Usage
 		taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
 		execOpts.ResumeSessionID = ""
+		// The on-disk brief was rendered for a resumed session (incremental
+		// comment reads anchored at the last run). The fresh session has no
+		// memory of that run, so re-render the brief cold before re-executing
+		// (ARG-548 review ADV-4). InjectRuntimeConfigForEnv is idempotent
+		// here: the marker block is replaced in place and platform.md is
+		// refreshed with identical bytes. Failure is non-fatal, matching the
+		// initial inject — with a server-supplied anchor the resumed wording
+		// is still safe for a fresh session (it fetches comments since the
+		// last run), just less complete than the cold full read.
+		taskCtx.PriorSessionResumed = false
+		if freshBrief, rerr := execenv.InjectRuntimeConfigForEnv(env, provider, taskCtx); rerr != nil {
+			taskLog.Warn("execenv: re-render brief for fresh-session retry failed (non-fatal)", "error", rerr)
+		} else if providerNeedsInlineSystemPrompt(provider) {
+			execOpts.SystemPrompt = freshBrief
+		}
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start", "error", retryErr)

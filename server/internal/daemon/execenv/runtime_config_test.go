@@ -51,7 +51,7 @@ func TestSingleIssueExecutionSectionPresentForIssueRuns(t *testing.T) {
 				"Complete the objective inside the assigned issue.",
 				"Do not create sub-issues, sibling issues, replacement issues, staged barriers, or coordination cards.",
 				"one issue for one objective",
-				"The server rejects issue creation and hierarchy changes from issue-bound agent runs.",
+				"The server rejects issue creation and hierarchy changes from issue-bound agent runs (agents granted the orchestrator role are exempt for sub-issues under issues assigned to them — see the multica-working-on-issues skill).",
 			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("[%s] section missing %q", tc.name, want)
@@ -356,9 +356,13 @@ func TestAssignmentBriefResumedSessionUsesIncrementalRead(t *testing.T) {
 	}
 }
 
-// ARG-548 M3: a resumed assignment run with no since-anchor still gets the
-// incremental instruction, anchored on the agent's own last-run knowledge.
-func TestAssignmentBriefResumedSessionWithoutAnchorStaysIncremental(t *testing.T) {
+// ARG-548 review ADV-3: a resumed assignment run whose claim carries NO
+// server-supplied since-anchor must NOT be told to skip history on its own
+// guesswork — the incremental branch is only safe when the server anchored
+// it. With an empty anchor the brief falls back to the mandatory cold
+// `--recent 10` read, and the old "use your own knowledge as the --since
+// anchor" wording must be gone entirely.
+func TestAssignmentBriefResumedSessionWithEmptyAnchorFallsBackToColdRead(t *testing.T) {
 	t.Parallel()
 	const issueID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
 	ctx := TaskContextForEnv{
@@ -367,15 +371,24 @@ func TestAssignmentBriefResumedSessionWithoutAnchorStaysIncremental(t *testing.T
 	}
 	out := buildMetaSkillContent("claude", ctx)
 
-	if strings.Contains(out, "--recent 10") {
-		t.Errorf("resumed assignment brief must not force the full --recent 10 re-read, got:\n%s", out)
-	}
 	for _, want := range []string{
-		"multica issue comment list " + issueID + " --since <RFC3339> --output json",
-		"your own knowledge of when your last run happened",
+		"multica issue comment list " + issueID + " --recent 10 --output json",
+		"this is mandatory, not optional",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("resumed assignment brief without anchor missing %q\n---\n%s", want, out)
+			t.Errorf("resumed assignment brief without anchor must keep the mandatory cold read, missing %q\n---\n%s", want, out)
+		}
+	}
+	// Note: the bare `[--since <RFC3339>]` flag doc in the `issue comment
+	// list` command bullet is fine — only the unanchored incremental
+	// INSTRUCTION is banned.
+	for _, banned := range []string{
+		"--since <RFC3339> --output json",
+		"your own knowledge of when your last run happened",
+		"do not re-read history you already processed",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("resumed assignment brief without anchor must not carry unanchored incremental wording %q\n---\n%s", banned, out)
 		}
 	}
 }
