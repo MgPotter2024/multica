@@ -203,13 +203,15 @@ func writeAvailableCommands(b *strings.Builder) {
 	b.WriteString("- `multica issue create --title \"...\" [--description-file <path>] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — create an issue. For agent-authored long descriptions prefer `--description-file <path>` (heredoc stdin can swallow trailing flags, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n")
 	b.WriteString("- `multica issue update <id> [--title X] [--description-file <path>] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>]` — update fields; pass `--parent \"\"` to clear parent.\n")
 	b.WriteString("- `multica issue status <id> <status>` — flip status (todo / in_progress / in_review / done / blocked / backlog / cancelled).\n")
-	b.WriteString("- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [...]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`.\n")
+	b.WriteString("- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [--customer-method browser|cli|api --customer-surface <surface> --customer-evidence <summary> | --customer-reason <reason>] [--parent <comment-id>]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`. `--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required; `--customer-path passed` also requires `--customer-method`, `--customer-surface`, and `--customer-evidence`; `--customer-path not_applicable` also requires `--customer-reason`.\n")
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
-	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file`. `multica issue comment add --help` for full flags.\n")
+	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file` (write the body to a UTF-8 file in your workdir first); pass `--parent <comment-id>` to reply inside a thread. `multica issue comment add --help` for full flags.\n")
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
 	b.WriteString("- `multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]` — pin or overwrite a key.\n")
 	b.WriteString("- `multica issue metadata delete <issue-id> --key <k>` — remove a key.\n")
 	b.WriteString("- `multica repo checkout <url> [--ref <branch-or-sha>]` — git worktree on a dedicated branch.\n\n")
+	b.WriteString("### Workspace\n")
+	b.WriteString("- `multica workspace member invite <email> [workspace-id|slug|prefix] [--role member|admin]` — send a pending email invitation; role defaults to `member`, owner is not allowed.\n\n")
 	b.WriteString("### Squad maintenance\n")
 	b.WriteString("- `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role> [--output json]` — change role in place (use this instead of remove+add).\n\n")
 }
@@ -400,21 +402,64 @@ func writeWorkflowComment(b *strings.Builder, provider string, ctx TaskContextFo
 }
 
 // writeWorkflowAssignment emits the assignment-triggered workflow.
+//
+// Step 3 (comment catch-up) is conditional (ARG-548 M3): warm and resumed
+// runs get an incremental read through the same hint chain the
+// comment-triggered workflow uses, so an agent resuming its own session does
+// not re-read history it already processed. Cold starts keep the mandatory
+// full `--recent 10` read unchanged — see writeAssignmentCommentCatchUp.
 func writeWorkflowAssignment(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("You are responsible for managing the issue status throughout your work, unless your Agent Identity forbids issue status changes.\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand your task\n", ctx.IssueID)
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
-	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID)
+	writeAssignmentCommentCatchUp(b, ctx)
 	fmt.Fprintf(b, "4. Run `multica issue status %s in_progress` unless your Agent Identity forbids issue status changes; if it does, skip this step.\n", ctx.IssueID)
 	b.WriteString("5. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	if ctx.IsSquadLeader {
-		fmt.Fprintf(b, "6. **Deliver the verified result once** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient and you MUST exit silently): write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path>` with the actual final local command/result and either a passed customer path (method, surface, evidence) or a concrete `not_applicable` reason. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID, ctx.IssueID)
+		fmt.Fprintf(b, "6. **Deliver the verified result once** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient and you MUST exit silently): write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path> --local-command \"<final check command>\" --local-result \"<bounded result summary>\" --customer-path passed|not_applicable` — with `--customer-path passed` also pass `--customer-method browser|cli|api --customer-surface <surface> --customer-evidence \"<observed result>\"`; with `--customer-path not_applicable` also pass `--customer-reason \"<why no customer path applies>\"`. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID, ctx.IssueID)
 	} else {
-		fmt.Fprintf(b, "6. **Deliver the verified result once — this step is mandatory**: write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path>` with the actual final local command/result and either a passed customer path (method, surface, evidence) or a concrete `not_applicable` reason. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID)
+		fmt.Fprintf(b, "6. **Deliver the verified result once — this step is mandatory**: write the handoff to a UTF-8 file and run `multica issue deliver %s --content-file <path> --local-command \"<final check command>\" --local-result \"<bounded result summary>\" --customer-path passed|not_applicable` — with `--customer-path passed` also pass `--customer-method browser|cli|api --customer-surface <surface> --customer-evidence \"<observed result>\"`; with `--customer-path not_applicable` also pass `--customer-reason \"<why no customer path applies>\"`. This command posts the comment and enters `in_review` atomically; do not also call `comment add` or generic `issue status`.\n", ctx.IssueID)
 	}
 	b.WriteString("7. Before exiting: only if this run produced a fact that clears the high bar (important AND likely to be re-read by future runs on this same issue, e.g. a new PR URL or deploy URL), or you noticed a metadata key from entry that is now stale, pin or clear it via `multica issue metadata set`/`delete`. Most runs write nothing here — that is the expected outcome, not a gap. When in doubt, do not write. See the `## Issue Metadata` section above for the full bar.\n")
 	b.WriteString("8. `multica issue deliver` is the only Agent path into `in_review`; if delivery validation fails, keep the issue `in_progress` and fix the missing evidence.\n")
-	b.WriteString("9. If work cannot continue, keep the issue `in_progress` and post one concise comment that states what is waiting, why it matters, and the exact human action or resource needed. Agents must never set `blocked`, `done`, or `cancelled`; those states are human-controlled.\n\n")
+	b.WriteString("9. If work cannot continue, keep the issue `in_progress` and post one concise comment that states what is waiting, why it matters, and the exact human action or resource needed. Agents must never set `blocked`, `done`, or `cancelled`; those states are human-controlled.\n")
+	b.WriteString("10. Runs have a hard turn budget. If you detect you are making no progress after several attempts at the same step, stop retrying, record what you tried and your best hypothesis in a concise issue comment, and end the run cleanly instead of burning the budget.\n\n")
+	// Unattended no-blocking-ask rule (ARG-548 G3). Deliberately references
+	// the Mentions section instead of restating it so the escalation
+	// @mention contract stays single-sourced.
+	b.WriteString("This run is unattended: never stall waiting for an interactive answer — nobody is watching your terminal, and a question asked there is never delivered. When a material decision is missing, either choose the safest reasonable default and record the assumption explicitly in the result comment, or post one blocker comment stating the exact decision needed (following the escalation contract in the `## Mentions` section) and continue with any other work that does not depend on it.\n\n")
+}
+
+// writeAssignmentCommentCatchUp emits step 3 of the assignment workflow.
+// It mirrors the comment-triggered workflow's conditional chain
+// (BuildNewCommentsHint → BuildResumedCommentsHint → BuildColdCommentsHint),
+// but assignment tasks often carry no trigger comment/thread, so the
+// thread-anchored hints may render nothing. In that case a resumed session
+// still gets an incremental `--since` read instead of a forced full re-read,
+// while a cold start keeps today's mandatory full `--recent 10` read.
+func writeAssignmentCommentCatchUp(b *strings.Builder, ctx TaskContextForEnv) {
+	if hint := BuildNewCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID, ctx.NewCommentsSince, ctx.NewCommentCount); hint != "" {
+		b.WriteString("3. " + hint)
+		return
+	}
+	if ctx.PriorSessionResumed {
+		if resumed := BuildResumedCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID); resumed != "" {
+			b.WriteString("3. " + resumed)
+			return
+		}
+		if ctx.NewCommentsSince != "" {
+			fmt.Fprintf(b, "3. You are resuming your prior session on this issue — do not re-read history you already processed. Fetch only new comments since your last run with `multica issue comment list %s --since %s --output json`.\n", ctx.IssueID, ctx.NewCommentsSince)
+			return
+		}
+		fmt.Fprintf(b, "3. You are resuming your prior session on this issue — do not re-read history you already processed. Fetch only new comments since your last run with `multica issue comment list %s --since <RFC3339> --output json`, using your own knowledge of when your last run happened as the `--since` anchor.\n", ctx.IssueID)
+		return
+	}
+	if cold := BuildColdCommentsHint(ctx.IssueID, ctx.TriggerCommentID, ctx.TriggerThreadID); cold != "" {
+		b.WriteString("3. " + cold)
+		return
+	}
+	// Cold start with no trigger thread: keep the full mandatory read.
+	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID)
 }
 
 // writeSubIssueCreation emits the Sub-issue Creation section (compressed
@@ -499,7 +544,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 		b.WriteString("**Post exactly ONE comment per run — your final result, before this turn exits.** Do NOT post progress updates, plans, or \"here's what I'm about to do next\" as comments while you work; keep all planning and progress in your own reasoning.\n\n")
 		b.WriteString("Keep comments concise and natural — state the outcome, not the process (good: \"Fixed the login redirect. PR: https://...\"; bad: numbered process logs).\n")
 	default:
-		b.WriteString("⚠️ **Final results MUST be delivered via `multica issue deliver`.** The user does NOT see your terminal output, assistant chat text, or run logs. The command posts exactly one result comment, records the final local/customer-path evidence, and enters `in_review`; do not also call `comment add` or generic `issue status`.\n\n")
+		b.WriteString("⚠️ **Final results MUST be delivered via `multica issue deliver`.** The user does NOT see your terminal output, assistant chat text, or run logs. The command posts exactly one result comment, records the final local/customer-path evidence, and enters `in_review`; do not also call `comment add` or generic `issue status`. Required flags: `--content-file <path>`, `--local-command`, `--local-result`, and `--customer-path passed|not_applicable`; `passed` also requires `--customer-method browser|cli|api`, `--customer-surface`, and `--customer-evidence`; `not_applicable` also requires `--customer-reason`.\n\n")
 		b.WriteString("Keep the handoff concise and natural — state the outcome, evidence, remaining risk, and exact human review action.\n")
 	}
 }

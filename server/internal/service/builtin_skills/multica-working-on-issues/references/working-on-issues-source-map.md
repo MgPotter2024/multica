@@ -13,6 +13,26 @@ at the bottom before relying on an exact line.
 - `server/migrations/181_issue_delivery_verification.up.sql` stores the server-attributed receipt outside the generic issue metadata bag.
 - `server/internal/handler/issue.go` rejects generic Agent `in_review` mutations when `MULTICA_VERIFIED_DELIVERY_REQUIRED=true`; human status updates remain unchanged.
 
+### Deliver flag contract (ARG-548 Phase 0)
+
+The SKILL.md flag block is traced to `issueDeliveryRequestFromFlags`
+(`server/cmd/multica/cmd_issue_delivery.go:84`):
+
+| Rule | File:line |
+|---|---|
+| `--content-file` required, inside workdir, valid non-empty UTF-8 | `cmd_issue_delivery.go:86-106` |
+| `--local-command` AND `--local-result` required | `cmd_issue_delivery.go:111-113` |
+| `--customer-path` must be `passed` or `not_applicable` | `cmd_issue_delivery.go:114-116` |
+| `passed` → `--customer-method`, `--customer-surface`, `--customer-evidence` all required | `cmd_issue_delivery.go:124-130` |
+| `not_applicable` → `--customer-reason` required | `cmd_issue_delivery.go:131-135` |
+| `--parent` optional (comment-triggered tasks) | `cmd_issue_delivery.go:44,118` |
+
+Verify with:
+
+```bash
+grep -n 'required' cmd/multica/cmd_issue_delivery.go
+```
+
 ## `multica issue pull-requests` — read PR links from Multica
 
 | Behavior | File:line | Drifted from |

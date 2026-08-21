@@ -27,7 +27,15 @@ const (
 	// (DefaultAgentIdleWatchdog / DefaultAgentToolWatchdog), so a session that keeps emitting events is
 	// never killed merely for running long (MUL-3064). Operators who want a
 	// hard ceiling for cost/resource control can set MULTICA_AGENT_TIMEOUT.
-	DefaultAgentTimeout                   = 0
+	DefaultAgentTimeout = 0
+	// DefaultAgentMaxTurns caps the number of agent turns in a single run.
+	// 200 is a deliberately generous runaway-kill ceiling, not a normal-run
+	// budget: healthy runs finish far below it, and the cap exists so a run
+	// stuck retrying the same step cannot burn tokens forever. Set
+	// MULTICA_AGENT_MAX_TURNS to override; 0 disables the ceiling. Only
+	// backends with a --max-turns flag (claude, codebuddy) enforce it;
+	// other adapters ignore the option.
+	DefaultAgentMaxTurns                  = 200
 	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
 	// DefaultAgentIdleWatchdog is the per-task safety net that force-stops a
 	// run when the backend has emitted no message for this long AND its
@@ -97,6 +105,7 @@ type Config struct {
 	PollInterval                   time.Duration
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
+	AgentMaxTurns                  int // per-run agent turn ceiling passed to backends that support --max-turns (0 = disabled)
 	CodexSemanticInactivityTimeout time.Duration
 	AgentIdleWatchdog              time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog              time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = disabled); backstop for hung tools now that there is no wall-clock cap
@@ -393,6 +402,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		agentTimeout = *overrides.AgentTimeout
 	}
 
+	agentMaxTurns, err := agentMaxTurnsFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+
 	codexSemanticInactivityTimeout, err := durationFromEnv("MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT", DefaultCodexSemanticInactivityTimeout)
 	if err != nil {
 		return Config{}, err
@@ -562,6 +576,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		PollInterval:                   pollInterval,
 		HeartbeatInterval:              heartbeatInterval,
 		AgentTimeout:                   agentTimeout,
+		AgentMaxTurns:                  agentMaxTurns,
 		CodexSemanticInactivityTimeout: codexSemanticInactivityTimeout,
 		AgentIdleWatchdog:              agentIdleWatchdog,
 		AgentToolWatchdog:              agentToolWatchdog,
@@ -570,6 +585,21 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodebuddyArgs:                  codebuddyArgs,
 		ProfileCommandOverrides:        profileCommandOverrides,
 	}, nil
+}
+
+// agentMaxTurnsFromEnv resolves the per-run agent turn ceiling from
+// MULTICA_AGENT_MAX_TURNS. Empty → DefaultAgentMaxTurns; 0 disables the
+// ceiling; negative values are rejected so a typo fails loudly at startup
+// instead of silently disabling the runaway kill switch.
+func agentMaxTurnsFromEnv() (int, error) {
+	n, err := intFromEnv("MULTICA_AGENT_MAX_TURNS", DefaultAgentMaxTurns)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("MULTICA_AGENT_MAX_TURNS: must be >= 0 (0 disables the ceiling), got %d", n)
+	}
+	return n, nil
 }
 
 // officialCloudHost is the hostname of Multica's hosted cloud. It's the only

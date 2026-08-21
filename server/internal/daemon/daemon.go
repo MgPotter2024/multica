@@ -3894,10 +3894,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	execOpts := agent.ExecOptions{
-		Cwd:                       env.WorkDir,
-		Model:                     model,
-		ThreadName:                deriveTaskThreadName(task),
-		Timeout:                   d.cfg.AgentTimeout,
+		Cwd:        env.WorkDir,
+		Model:      model,
+		ThreadName: deriveTaskThreadName(task),
+		Timeout:    d.cfg.AgentTimeout,
+		// MaxTurns is a deliberately generous runaway-kill ceiling (default
+		// 200), not a normal-run budget. Backends without a --max-turns flag
+		// ignore it; 0 disables the ceiling entirely.
+		MaxTurns:                  d.cfg.AgentMaxTurns,
 		SemanticInactivityTimeout: d.cfg.CodexSemanticInactivityTimeout,
 		ResumeSessionID:           task.PriorSessionID,
 		ExtraArgs:                 extraArgs,

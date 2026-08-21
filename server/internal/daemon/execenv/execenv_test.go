@@ -904,6 +904,7 @@ func TestInjectRuntimeConfigAvailableCommandsCoreOnly(t *testing.T) {
 		"multica issue status <id> <status>",
 		"multica issue comment add <issue-id>",
 		"multica issue comment add --help",
+		"multica workspace member invite <email>",
 		"multica squad member set-role <squad-id>",
 	} {
 		if !strings.Contains(s, want) {

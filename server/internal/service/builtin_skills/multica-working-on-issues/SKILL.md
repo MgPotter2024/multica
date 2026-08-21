@@ -154,6 +154,24 @@ creates exactly one result comment, records bounded local verification and custo
 and enters `in_review` in one transaction. Humans retain the generic status controls. Reply-mode
 Agents remain comment-only unless their trigger explicitly grants ownership.
 
+The deliver flag contract (all validated client-side before the API call):
+
+```bash
+multica issue deliver <id> \
+  --content-file <path-inside-workdir> \
+  --local-command "<final verification command>" \
+  --local-result "<bounded result summary>" \
+  --customer-path passed|not_applicable \
+  # when --customer-path passed, ALL THREE are also required:
+  --customer-method browser|cli|api --customer-surface <surface> --customer-evidence "<observed result>" \
+  # when --customer-path not_applicable, this is also required instead:
+  --customer-reason "<why no customer path applies>"
+```
+
+`--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required.
+`--parent <comment-id>` is optional (comment-triggered tasks). The content file must be valid,
+non-empty UTF-8 inside the current working directory.
+
 A status change is not cosmetic — the server enqueues or skips agent work based
 on it. These are the contracts, not advice:
 

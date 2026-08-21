@@ -37,6 +37,55 @@ func TestPatternsFromEnv_DropsSeparatorBearingEntries(t *testing.T) {
 	}
 }
 
+// ARG-548 M5: the per-run turn ceiling defaults to 200 (runaway kill switch),
+// honors MULTICA_AGENT_MAX_TURNS, treats 0 as "disabled", and rejects
+// negatives and garbage loudly.
+func TestAgentMaxTurnsFromEnv(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "")
+		got, err := agentMaxTurnsFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Pin the literal 200 so a silent default change fails this test.
+		if got != 200 {
+			t.Fatalf("expected default 200, got %d (DefaultAgentMaxTurns=%d)", got, DefaultAgentMaxTurns)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "37")
+		got, err := agentMaxTurnsFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 37 {
+			t.Fatalf("expected override 37, got %d", got)
+		}
+	})
+	t.Run("zero disables", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "0")
+		got, err := agentMaxTurnsFromEnv()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 0 {
+			t.Fatalf("expected 0 (disabled), got %d", got)
+		}
+	})
+	t.Run("negative rejected", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "-1")
+		if _, err := agentMaxTurnsFromEnv(); err == nil {
+			t.Fatal("expected error for negative MULTICA_AGENT_MAX_TURNS")
+		}
+	})
+	t.Run("garbage rejected", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_MAX_TURNS", "many")
+		if _, err := agentMaxTurnsFromEnv(); err == nil {
+			t.Fatal("expected error for non-integer MULTICA_AGENT_MAX_TURNS")
+		}
+	})
+}
+
 func TestIsSafeAgentName(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
