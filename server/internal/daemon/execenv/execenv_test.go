@@ -306,8 +306,12 @@ func TestPrepareWithRepoContext(t *testing.T) {
 	t.Parallel()
 	workspacesRoot := t.TempDir()
 
+	// Pinned to inline mode: the checkout usage prose this test asserts
+	// moves to .multica/platform.md in file mode (covered by the
+	// platform_reference tests).
 	taskCtx := TaskContextForEnv{
-		IssueID: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+		IssueID:           "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+		PlatformReference: PlatformReferenceInline,
 		Repos: []RepoContextForEnv{
 			{URL: "https://github.com/org/backend", Ref: "release/v2"},
 			{URL: "https://github.com/org/frontend"},
@@ -880,7 +884,10 @@ func TestInjectRuntimeConfigAvailableCommandsCoreOnly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	if _, err := InjectRuntimeConfig(dir, "codex", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+	// Pinned to inline mode: this test locks the FULL Available Commands
+	// composition, which lives in .multica/platform.md in file mode (the
+	// platform_reference tests assert the same list there).
+	if _, err := InjectRuntimeConfig(dir, "codex", TaskContextForEnv{IssueID: "issue-1", PlatformReference: PlatformReferenceInline}); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -1499,8 +1506,12 @@ func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	t.Parallel()
 	workspacesRoot := t.TempDir()
 
+	// Pinned to inline mode: the checkout usage prose this test asserts
+	// moves to .multica/platform.md in file mode (covered by the
+	// platform_reference tests).
 	taskCtx := TaskContextForEnv{
-		IssueID: "c3d4e5f6-a7b8-9012-cdef-123456789012",
+		IssueID:           "c3d4e5f6-a7b8-9012-cdef-123456789012",
+		PlatformReference: PlatformReferenceInline,
 		Repos: []RepoContextForEnv{
 			{URL: "https://github.com/org/backend"},
 		},
@@ -1629,7 +1640,12 @@ func TestInjectRuntimeConfigCommentGuardrailIsProviderAgnostic(t *testing.T) {
 			t.Run(provider+"/"+host, func(t *testing.T) {
 				runtimeGOOS = host
 				dir := t.TempDir()
-				if _, err := InjectRuntimeConfig(dir, provider, TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+				// Inline mode: the `issue comment add` bullet whose three
+				// input modes are asserted below lives in
+				// .multica/platform.md in file mode; the Comment
+				// Formatting guardrail itself is asserted mode-agnostically
+				// by the platform_reference tests.
+				if _, err := InjectRuntimeConfig(dir, provider, TaskContextForEnv{IssueID: "issue-1", PlatformReference: PlatformReferenceInline}); err != nil {
 					t.Fatalf("InjectRuntimeConfig failed: %v", err)
 				}
 
@@ -1865,18 +1881,42 @@ func TestInjectRuntimeConfigAutopilotRunOnlyNoIssueWorkflow(t *testing.T) {
 
 func TestInjectRuntimeConfigUnknownProvider(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 
-	// Unknown provider should be a no-op.
-	if _, err := InjectRuntimeConfig(dir, "unknown", TaskContextForEnv{}); err != nil {
-		t.Fatalf("expected no error for unknown provider, got: %v", err)
-	}
+	t.Run("inline", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
 
-	// No files should be created.
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Fatalf("expected empty dir for unknown provider, got %d entries", len(entries))
-	}
+		// Unknown provider in inline mode should be a full no-op on disk.
+		if _, err := InjectRuntimeConfig(dir, "unknown", TaskContextForEnv{PlatformReference: PlatformReferenceInline}); err != nil {
+			t.Fatalf("expected no error for unknown provider, got: %v", err)
+		}
+
+		// No files should be created.
+		entries, _ := os.ReadDir(dir)
+		if len(entries) != 0 {
+			t.Fatalf("expected empty dir for unknown provider, got %d entries", len(entries))
+		}
+	})
+
+	t.Run("file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		// Unknown provider skips the brief file (prompt-only mode), but the
+		// platform reference file is still written: the returned brief
+		// content carries the pointer to .multica/platform.md, so the file
+		// must exist at that path.
+		if _, err := InjectRuntimeConfig(dir, "unknown", TaskContextForEnv{PlatformReference: PlatformReferenceFile}); err != nil {
+			t.Fatalf("expected no error for unknown provider, got: %v", err)
+		}
+		entries, _ := os.ReadDir(dir)
+		if len(entries) != 1 || entries[0].Name() != ".multica" {
+			t.Fatalf("expected only .multica in dir for unknown provider in file mode, got %v", entries)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".multica", "platform.md")); err != nil {
+			t.Fatalf("expected .multica/platform.md to exist in file mode: %v", err)
+		}
+	})
 }
 
 func TestInjectRuntimeConfigHermes(t *testing.T) {
@@ -4085,6 +4125,11 @@ func TestInjectRuntimeConfigAssignmentTriggerMentionsRecent(t *testing.T) {
 func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 	t.Parallel()
 
+	// All cases pin inline mode: the full Issue Metadata guidance and the
+	// metadata discovery lines this test asserts live in
+	// .multica/platform.md in file mode (covered by the platform_reference
+	// tests, which also pin the one-sentence inline stand-in).
+
 	// Discovery lines in Available Commands → Core appear in every runtime
 	// config except quick-create (whose minimal Available Commands lists
 	// only `issue create`). These are the single discovery point for the
@@ -4167,8 +4212,9 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 		{
 			name: "comment_triggered",
 			ctx: TaskContextForEnv{
-				IssueID:          "issue-md-1",
-				TriggerCommentID: "comment-md-1",
+				IssueID:           "issue-md-1",
+				TriggerCommentID:  "comment-md-1",
+				PlatformReference: PlatformReferenceInline,
 			},
 			provider: "claude",
 			filename: "CLAUDE.md",
@@ -4186,7 +4232,7 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 		},
 		{
 			name:     "assignment_triggered",
-			ctx:      TaskContextForEnv{IssueID: "issue-md-2"},
+			ctx:      TaskContextForEnv{IssueID: "issue-md-2", PlatformReference: PlatformReferenceInline},
 			provider: "claude",
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
@@ -4202,6 +4248,7 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			name: "quick_create_no_metadata_section",
 			ctx: TaskContextForEnv{
 				QuickCreatePrompt: "create a task about X",
+				PlatformReference: PlatformReferenceInline,
 			},
 			provider: "codex",
 			filename: "AGENTS.md",
@@ -4210,8 +4257,9 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 		{
 			name: "run_only_autopilot_no_metadata_section",
 			ctx: TaskContextForEnv{
-				AutopilotRunID: "run-md-1",
-				AutopilotID:    "autopilot-md-1",
+				AutopilotRunID:    "run-md-1",
+				AutopilotID:       "autopilot-md-1",
+				PlatformReference: PlatformReferenceInline,
 			},
 			provider: "codex",
 			filename: "AGENTS.md",
@@ -4220,7 +4268,8 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 		{
 			name: "chat_no_metadata_section",
 			ctx: TaskContextForEnv{
-				ChatSessionID: "chat-md-1",
+				ChatSessionID:     "chat-md-1",
+				PlatformReference: PlatformReferenceInline,
 			},
 			provider: "claude",
 			filename: "CLAUDE.md",

@@ -19,15 +19,19 @@ func TestSingleIssueExecutionSectionPresentForIssueRuns(t *testing.T) {
 		name string
 		ctx  TaskContextForEnv
 	}{
+		// Inline mode pinned: the Knowledge Layers section asserted below
+		// moves to .multica/platform.md in file mode (platform_reference
+		// tests cover that); Single-Issue Execution stays inline in both.
 		{
 			name: "assignment-triggered",
-			ctx:  TaskContextForEnv{IssueID: "11111111-2222-3333-4444-555555555555"},
+			ctx:  TaskContextForEnv{IssueID: "11111111-2222-3333-4444-555555555555", PlatformReference: PlatformReferenceInline},
 		},
 		{
 			name: "comment-triggered",
 			ctx: TaskContextForEnv{
-				IssueID:          "22222222-3333-4444-5555-666666666666",
-				TriggerCommentID: "33333333-4444-5555-6666-777777777777",
+				IssueID:           "22222222-3333-4444-5555-666666666666",
+				TriggerCommentID:  "33333333-4444-5555-6666-777777777777",
+				PlatformReference: PlatformReferenceInline,
 			},
 		},
 	}
@@ -649,9 +653,13 @@ func TestWorkspaceContextHeadingSkippedWhenEmpty(t *testing.T) {
 }
 
 func TestConnectedAppsRenderedAcrossBriefModes(t *testing.T) {
+	// Inline mode pinned: in platform-reference file mode the Connected
+	// Apps section moves to .multica/platform.md (platform_reference tests
+	// cover that rendering).
 	ctx := TaskContextForEnv{
-		IssueID:          "11111111-2222-3333-4444-555555555555",
-		WorkspaceContext: "Prefer source-of-truth systems.",
+		IssueID:           "11111111-2222-3333-4444-555555555555",
+		PlatformReference: PlatformReferenceInline,
+		WorkspaceContext:  "Prefer source-of-truth systems.",
 		ConnectedApps: []runtimeapps.ConnectedApp{{
 			Provider:    "composio",
 			ServerName:  "composio",

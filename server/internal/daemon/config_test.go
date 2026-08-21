@@ -12,7 +12,42 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
+
+// ARG-548 Phase 1: MULTICA_PLATFORM_REFERENCE defaults to "file"
+// (externalized .multica/platform.md), accepts "inline" as the rollback
+// switch, and rejects anything else loudly at startup. Mirrors the
+// LoadConfig call: execenv.ParsePlatformReferenceMode over the raw env value.
+func TestPlatformReferenceFromEnv(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv(execenv.PlatformReferenceEnvVar, "")
+		got, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Pin the literal "file" so a silent default change fails this test.
+		if got != execenv.PlatformReferenceFile {
+			t.Fatalf("expected default %q, got %q", execenv.PlatformReferenceFile, got)
+		}
+	})
+	t.Run("inline rollback", func(t *testing.T) {
+		t.Setenv(execenv.PlatformReferenceEnvVar, "inline")
+		got, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != execenv.PlatformReferenceInline {
+			t.Fatalf("expected inline, got %q", got)
+		}
+	})
+	t.Run("garbage rejected", func(t *testing.T) {
+		t.Setenv(execenv.PlatformReferenceEnvVar, "sidecar")
+		if _, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar)); err == nil {
+			t.Fatal("expected error for invalid MULTICA_PLATFORM_REFERENCE")
+		}
+	})
+}
 
 func TestPatternsFromEnv_DefaultsWhenUnset(t *testing.T) {
 	t.Setenv("MULTICA_GC_ARTIFACT_PATTERNS", "")
