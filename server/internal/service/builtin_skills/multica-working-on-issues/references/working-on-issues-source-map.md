@@ -147,6 +147,22 @@ Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee. Promoting the next stage's `backlog` sub-issues to
 `todo` is the woken agent's decision, not a server side effect.
 
+## Agent role gates (ARG-548 M9/M10)
+
+| Behavior | File:line |
+|---|---|
+| `agent.role` column (`''`/`orchestrator`/`reviewer`, default `''`) | `server/migrations/183_agent_role.up.sql` |
+| Pure policy: `ValidateCreate` (orchestrator sub-issue create), `ValidateStatus` (reviewer `in_review → done`, never self-assigned, blocked/cancelled still forbidden), `ValidateHierarchyChange` (orchestrator re-parent within owned subtree) | `server/internal/issuepolicy/actor.go:37,58,87` |
+| Role lookup for the acting agent (fail-closed to `''`) | `server/internal/handler/handler.go:548` (`agentActorRole`) |
+| Ownership facts: parent assigned to actor / owned-subtree re-parent | `server/internal/handler/issue_role_gates.go:17,44` |
+| Enforcement: create | `server/internal/handler/issue.go:2169` |
+| Enforcement: single update (status + parent) | `server/internal/handler/issue.go:2488,2555` |
+| Enforcement: batch update (best-case pre-loop + real per-issue facts) | `server/internal/handler/issue.go:3042,3051,3080,3090` |
+| Role writes are human owner/admin only (agents/machine credentials 403) | `server/internal/handler/agent.go` (`UpdateAgent` role gate) |
+
+An agent with no role keeps exactly the pre-ARG-548 behavior. Roles are set by
+a human via `multica agent update --role orchestrator|reviewer|none`.
+
 ## Metadata CLI
 
 | Behavior | File:line |

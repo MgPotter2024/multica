@@ -56,6 +56,10 @@ UPDATE agent SET
     model = COALESCE(sqlc.narg('model'), model),
     thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
     composio_toolkit_allowlist = COALESCE(sqlc.narg('composio_toolkit_allowlist')::text[], composio_toolkit_allowlist),
+    -- role is the agent-level issue-policy role (ARG-548). The handler only
+    -- passes it after the human owner/admin + non-agent-actor gates; ''
+    -- (clear) is a valid non-NULL value so COALESCE handles it directly.
+    role = COALESCE(sqlc.narg('role'), role),
     updated_at = now()
 WHERE id = $1
 RETURNING *;

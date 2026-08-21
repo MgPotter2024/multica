@@ -392,6 +392,15 @@ export interface Agent {
    * (MUL-2339).
    */
   thinking_level?: string;
+  /**
+   * Agent-level issue-policy role (ARG-548): "" (default, no extra
+   * capability), "orchestrator" (may create/re-parent sub-issues under
+   * issues assigned to it), or "reviewer" (may move issues it is NOT
+   * assigned to from in_review to done). Writable only by human workspace
+   * owners/admins. Optional so older backends that omit the field keep
+   * parsing; treat undefined as "".
+   */
+  role?: string;
   owner_id: string | null;
   skills: AgentSkillSummary[];
   created_at: string;
@@ -574,6 +583,14 @@ export interface UpdateAgentRequest {
   status?: AgentStatus;
   max_concurrent_tasks?: number;
   model?: string;
+  /**
+   * Agent-level issue-policy role (ARG-548): "", "orchestrator", or
+   * "reviewer". A real change is accepted only from a HUMAN workspace
+   * owner/admin; machine-credential and agent-actor requests are rejected
+   * with 403, and any other value is rejected with 400. Echoing the current
+   * value back unchanged is tolerated (no-op).
+   */
+  role?: string;
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change

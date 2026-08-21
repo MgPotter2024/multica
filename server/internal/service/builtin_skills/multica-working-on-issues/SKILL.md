@@ -167,11 +167,24 @@ on it. These are the contracts, not advice:
   itself on merge — you do not also need to flip it manually.
 - **`cancelled`** stops outstanding work; treat it as a user-driven decision.
 
+Agent status writes are gated server-side: agents may set
+`backlog`/`todo`/`in_progress`/`in_review`; `blocked` and `cancelled` are
+always rejected. One narrow exception (ARG-548): an agent whose `role` is
+`reviewer` may perform exactly the `in_review → done` transition — and never
+on an issue currently assigned to that same reviewer (implementer ≠
+reviewer). Any other agent `done` write is rejected with 403.
+
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
 On an agent-assigned issue, create status decides whether the assignee fires
 immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
 time; `backlog` sets the assignee without triggering.
+
+Creating sub-issues is member work by default — agent creates are rejected
+with 403, except (ARG-548) an agent whose `role` is `orchestrator` may create
+sub-issues (including staged ones) under an issue currently assigned to that
+same agent, and may re-parent such sub-issues within its own subtree. All
+other agent hierarchy changes remain forbidden.
 
 Parallel children — all start now:
 
