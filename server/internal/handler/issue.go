@@ -2150,23 +2150,31 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.OriginType != nil {
 		requestOriginType = *req.OriginType
 	}
-	// Orchestrator sub-issue creation (ARG-548 M9): the parent must exist in
-	// this workspace and be assigned to the acting agent. The fact is only
-	// looked up for orchestrator agents so every other create path keeps its
-	// current query profile; any lookup failure leaves the fact false
-	// (fail closed).
-	parentAssignedToActor := false
+	// Orchestrator sub-issue creation (ARG-548 M9, tightened by the ARG-548
+	// review): the parent must exist in this workspace, be assigned to the
+	// acting agent, and be a TOP-LEVEL issue (ADV-7a depth cap); the sub-issue
+	// must not be assigned back to the acting orchestrator (ADV-7b). The facts
+	// are only looked up for orchestrator agents so every other create path
+	// keeps its current query profile; any lookup failure leaves the
+	// permissive facts false (fail closed).
+	createFacts := issuepolicy.CreateFacts{HasParent: req.ParentIssueID != nil}
 	if requestActorType == "agent" && requestActorRole == issuepolicy.RoleOrchestrator && req.ParentIssueID != nil {
 		if parentUUID, err := util.ParseUUID(*req.ParentIssueID); err == nil {
 			if parent, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
 				ID:          parentUUID,
 				WorkspaceID: wsUUID,
 			}); err == nil {
-				parentAssignedToActor = issueAssignedToAgent(parent, requestActorID)
+				createFacts.ParentAssignedToActor = issueAssignedToAgent(parent, requestActorID)
+				createFacts.ParentIsSubIssue = parent.ParentIssueID.Valid
+			}
+		}
+		if req.AssigneeType != nil && *req.AssigneeType == "agent" && req.AssigneeID != nil {
+			if assigneeUUID, err := util.ParseUUID(*req.AssigneeID); err == nil {
+				createFacts.AssigneeIsActor = uuidToString(assigneeUUID) == requestActorID
 			}
 		}
 	}
-	if err := issuepolicy.ValidateCreate(requestActorType, requestActorRole, requestOriginType, req.ParentIssueID != nil, parentAssignedToActor); err != nil {
+	if err := issuepolicy.ValidateCreate(requestActorType, requestActorRole, requestOriginType, createFacts); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -2180,6 +2188,13 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		priority = "none"
 	}
 	if !validateIssueEnum(w, "status", status, validIssueStatuses) {
+		return
+	}
+	// Agents can never mint an issue directly in a review or terminal status
+	// (ARG-548 review, ADV-6) — those statuses require the gated transition
+	// paths (deliver for in_review, the reviewer gate for done).
+	if err := issuepolicy.ValidateCreateStatus(requestActorType, status); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if !validateIssueEnum(w, "priority", priority, validIssuePriorities) {
@@ -2486,7 +2501,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := issuepolicy.ValidateStatus(actorType, actorRole, prevIssue.Status, *req.Status,
-			issueAssignedToAgent(prevIssue, actorID)); err != nil {
+			h.agentStatusFacts(r.Context(), prevIssue, actorType, actorRole, actorID, *req.Status)); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -3035,11 +3050,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Updates.Status != nil {
 		// Pre-loop check with the BEST-CASE per-issue facts (current status
-		// in_review, not self-assigned): it rejects the whole batch exactly
-		// as before when no issue could ever pass (plain agent setting done,
-		// any agent setting blocked/cancelled), while letting reviewer
-		// batches proceed to the real per-issue enforcement inside the loop.
-		if err := issuepolicy.ValidateStatus(actorType, actorRole, "in_review", *req.Updates.Status, false); err != nil {
+		// in_review, a delivery receipt recorded by someone else, not
+		// self-assigned): it rejects the whole batch exactly as before when
+		// no issue could ever pass (plain agent setting done, any agent
+		// setting blocked/cancelled), while letting reviewer batches proceed
+		// to the real per-issue enforcement inside the loop.
+		if err := issuepolicy.ValidateStatus(actorType, actorRole, "in_review", *req.Updates.Status,
+			issuepolicy.StatusFacts{HasDelivery: true}); err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -3078,7 +3095,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if actorType == "agent" {
 			if req.Updates.Status != nil {
 				if err := issuepolicy.ValidateStatus(actorType, actorRole, prevIssue.Status, *req.Updates.Status,
-					issueAssignedToAgent(prevIssue, actorID)); err != nil {
+					h.agentStatusFacts(r.Context(), prevIssue, actorType, actorRole, actorID, *req.Updates.Status)); err != nil {
 					continue
 				}
 			}

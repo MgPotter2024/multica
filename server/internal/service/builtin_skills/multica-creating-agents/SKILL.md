@@ -81,7 +81,7 @@ The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 | `mcp_config` | `agent.mcp_config` (raw JSON) | CLI checks it is a JSON object or `null`; server stores as-is. At create, literal `null` is dropped (no-op); at update, `null` clears the column | daemon → provider (MCP servers) — **runtime-consumed**; redacted on read |
 | `visibility` | `agent.visibility` | — | access control; defaults to `private`; gates who can read/route a private agent (e.g. a private squad leader) — NOT the runtime prompt |
 | `max_concurrent_tasks` | `agent.max_concurrent_tasks` | — | scheduler task cap; defaults to `6` |
-| `role` | `agent.role` (default `''`) | must be `''`/`orchestrator`/`reviewer` (400); **update-only** — not accepted at create | issue-policy gates (ARG-548): `orchestrator` may create/re-parent sub-issues under issues assigned to it; `reviewer` may move issues it is NOT assigned to from `in_review` to `done` |
+| `role` | `agent.role` (default `''`) | must be `''`/`orchestrator`/`reviewer` (400); **update-only** — not accepted at create | issue-policy gates (ARG-548): `orchestrator` may create/re-parent sub-issues under TOP-LEVEL issues assigned to it (never under another sub-issue, never assigned back to itself); `reviewer` may move an `in_review` issue to `done` only when a delivery receipt exists that was recorded by ANOTHER agent (never its own delivery, never an issue assigned to it) |
 
 Defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
 `custom_args` → `[]`, `visibility` → `private`, `max_concurrent_tasks` → `6`
@@ -112,8 +112,12 @@ with `multica agent update --role orchestrator|reviewer|none` (`none` clears to
 from a HUMAN workspace owner/admin: machine credentials (`mat_`/`mcn_`) and
 agent actors get 403, so an agent can never grant a role — its own or another
 agent's. Echoing the current value back unchanged is a tolerated no-op for
-PATCH-as-PUT clients. What each role unlocks on issues is documented in the
-`multica-working-on-issues` skill.
+PATCH-as-PUT clients. After a `--role` update the CLI reads the role back from
+the response and prints a warning when it does not match the requested value —
+an older server that predates agent roles ignores the field and would
+otherwise silently no-op. What each role unlocks on issues — including the
+receipt-anchored reviewer done-gate and the orchestrator depth/self-assign
+bounds — is documented in the `multica-working-on-issues` skill.
 
 ### model vs custom_args
 

@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"strings"
 
+	"github.com/multica-ai/multica/server/internal/issuepolicy"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -17,6 +19,36 @@ import (
 func issueAssignedToAgent(issue db.Issue, agentID string) bool {
 	return issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
 		issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == agentID
+}
+
+// agentStatusFacts computes issuepolicy.StatusFacts for a status write on
+// `issue` by the given actor. The delivery-receipt facts (ARG-548 review,
+// ADV-1/ADV-2) are looked up only for a reviewer agent writing "done" so
+// every other status write keeps its current query profile; any lookup
+// failure leaves HasDelivery false, which the reviewer done branch rejects
+// (fail closed).
+func (h *Handler) agentStatusFacts(ctx context.Context, issue db.Issue, actorType, actorRole, actorID, newStatus string) issuepolicy.StatusFacts {
+	facts := issuepolicy.StatusFacts{ActorIsAssignee: issueAssignedToAgent(issue, actorID)}
+	if actorType != "agent" || actorRole != issuepolicy.RoleReviewer ||
+		strings.ToLower(strings.TrimSpace(newStatus)) != "done" {
+		return facts
+	}
+	agentUUID, err := util.ParseUUID(actorID)
+	if err != nil {
+		return facts
+	}
+	row, err := h.Queries.GetIssueDeliveryReviewFacts(ctx, db.GetIssueDeliveryReviewFactsParams{
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+		AgentID:     agentUUID,
+	})
+	if err != nil {
+		return facts
+	}
+	facts.HasDelivery = row.HasDelivery
+	facts.LatestDeliveredByActor = row.LatestDeliveredByAgent
+	facts.ActorEverDelivered = row.AgentEverDelivered
+	return facts
 }
 
 // issueParentOwnedByActor reports whether the issue's CURRENT parent exists in

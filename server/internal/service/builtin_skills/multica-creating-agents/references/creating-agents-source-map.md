@@ -32,7 +32,7 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `agent skills list` | 760 | reads bindings, no side effect | `multica agent skills list --help` |
 | `agent env get` | 894 | `GET /api/agents/{id}/env` | `multica agent env get --help` |
 | `agent env set` | 929 | `PUT /api/agents/{id}/env` with full `custom_env` map (935, 949) | `multica agent env set --help` |
-| `--role` flag on `agent update` (ARG-548) | 206 | `orchestrator`/`reviewer`/`none`; `runAgentUpdate` maps `none` → `""` and sends `role` only when `Changed` (666–671); `ROLE` column shown in `agent list` (429, 440) and `agent get` (468, 473) tables | `multica agent update --help` |
+| `--role` flag on `agent update` (ARG-548) | 206 | `orchestrator`/`reviewer`/`none`; `runAgentUpdate` maps `none` → `""` and sends `role` only when `Changed` (666–671); after the PUT it reads `role` back from the response and warns on stderr when it differs from the requested value (ADV-11 — an older server without role support silently drops the field); `ROLE` column shown in `agent list` (429, 440) and `agent get` (468, 473) tables | `multica agent update --help` |
 
 Note: the CLI no longer exposes `--from-template`. The agent-template backend
 still exists (registry `server/internal/agenttmpl/`, handler `agent_template.go`,

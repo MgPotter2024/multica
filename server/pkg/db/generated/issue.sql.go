@@ -699,6 +699,50 @@ func (q *Queries) GetIssueByOrigin(ctx context.Context, arg GetIssueByOriginPara
 	return i, err
 }
 
+const getIssueDeliveryReviewFacts = `-- name: GetIssueDeliveryReviewFacts :one
+SELECT
+    EXISTS (
+        SELECT 1 FROM issue_delivery_verification a
+        WHERE a.workspace_id = $1 AND a.issue_id = $2
+    )::boolean AS has_delivery,
+    COALESCE((
+        SELECT l.agent_id = $3 FROM issue_delivery_verification l
+        WHERE l.workspace_id = $1 AND l.issue_id = $2
+        ORDER BY l.created_at DESC, l.task_id DESC
+        LIMIT 1
+    ), FALSE)::boolean AS latest_delivered_by_agent,
+    EXISTS (
+        SELECT 1 FROM issue_delivery_verification e
+        WHERE e.workspace_id = $1 AND e.issue_id = $2
+          AND e.agent_id = $3
+    )::boolean AS agent_ever_delivered
+`
+
+type GetIssueDeliveryReviewFactsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+type GetIssueDeliveryReviewFactsRow struct {
+	HasDelivery            bool `json:"has_delivery"`
+	LatestDeliveredByAgent bool `json:"latest_delivered_by_agent"`
+	AgentEverDelivered     bool `json:"agent_ever_delivered"`
+}
+
+// Immutable facts for the receipt-anchored reviewer done-gate (ARG-548
+// review, ADV-1/ADV-2): whether ANY verified delivery receipt exists for the
+// issue, whether the LATEST receipt was recorded by the given agent, and
+// whether the given agent EVER recorded a receipt for the issue. Receipts are
+// written only by the real `issue deliver` flow, so unlike the current
+// assignee they cannot be rewritten by the acting agent.
+func (q *Queries) GetIssueDeliveryReviewFacts(ctx context.Context, arg GetIssueDeliveryReviewFactsParams) (GetIssueDeliveryReviewFactsRow, error) {
+	row := q.db.QueryRow(ctx, getIssueDeliveryReviewFacts, arg.WorkspaceID, arg.IssueID, arg.AgentID)
+	var i GetIssueDeliveryReviewFactsRow
+	err := row.Scan(&i.HasDelivery, &i.LatestDeliveredByAgent, &i.AgentEverDelivered)
+	return i, err
+}
+
 const getIssueDeliveryVerificationForTask = `-- name: GetIssueDeliveryVerificationForTask :one
 SELECT receipt FROM issue_delivery_verification
 WHERE workspace_id = $1

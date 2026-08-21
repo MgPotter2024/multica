@@ -172,16 +172,27 @@ wakes the parent assignee. Promoting the next stage's `backlog` sub-issues to
 | Behavior | File:line |
 |---|---|
 | `agent.role` column (`''`/`orchestrator`/`reviewer`, default `''`) | `server/migrations/183_agent_role.up.sql` |
-| Pure policy: `ValidateCreate` (orchestrator sub-issue create), `ValidateStatus` (reviewer `in_review → done`, never self-assigned, blocked/cancelled still forbidden), `ValidateHierarchyChange` (orchestrator re-parent within owned subtree) | `server/internal/issuepolicy/actor.go:37,58,87` |
-| Role lookup for the acting agent (fail-closed to `''`) | `server/internal/handler/handler.go:548` (`agentActorRole`) |
-| Ownership facts: parent assigned to actor / owned-subtree re-parent | `server/internal/handler/issue_role_gates.go:17,44` |
-| Enforcement: create | `server/internal/handler/issue.go:2169` |
-| Enforcement: single update (status + parent) | `server/internal/handler/issue.go:2488,2555` |
-| Enforcement: batch update (best-case pre-loop + real per-issue facts) | `server/internal/handler/issue.go:3042,3051,3080,3090` |
+| Pure policy: `ValidateCreate` (orchestrator sub-issue create — parent owned, top-level only, never self-assigned), `ValidateCreateStatus` (agent creates only `backlog`/`todo`/`in_progress`), `ValidateStatus` (reviewer `in_review → done`, receipt-anchored, never self-assigned/self-delivered; blocked/cancelled still forbidden), `ValidateHierarchyChange` (orchestrator re-parent within owned subtree) | `server/internal/issuepolicy/actor.go` (`ValidateCreate`, `ValidateCreateStatus`, `ValidateStatus`, `ValidateHierarchyChange`) |
+| Role lookup for the acting agent (fail-closed to `''`) | `server/internal/handler/handler.go` (`agentActorRole`) |
+| Ownership/receipt facts: parent assigned to actor, parent depth, owned-subtree re-parent, delivery-receipt facts for the reviewer done-gate (fail closed on any lookup error) | `server/internal/handler/issue_role_gates.go` (`agentStatusFacts`, `issueParentOwnedByActor`, `orchestratorHierarchyFact`) |
+| Receipt facts query (`has_delivery`, `latest_delivered_by_agent`, `agent_ever_delivered`) over `issue_delivery_verification` | `server/pkg/db/queries/issue.sql` (`GetIssueDeliveryReviewFacts`); table from `server/migrations/181_issue_delivery_verification.up.sql`, rows written only by `DeliverIssue` (`server/internal/handler/issue_delivery.go`) |
+| Enforcement: create (`ValidateCreate` + `ValidateCreateStatus`) | `server/internal/handler/issue.go` (`CreateIssue`) |
+| Enforcement: single update (status + parent) | `server/internal/handler/issue.go` (`UpdateIssue`) |
+| Enforcement: batch update (best-case pre-loop + real per-issue facts, including per-issue receipt facts) | `server/internal/handler/issue.go` (`BatchUpdateIssues`) |
 | Role writes are human owner/admin only (agents/machine credentials 403) | `server/internal/handler/agent.go` (`UpdateAgent` role gate) |
 
 An agent with no role keeps exactly the pre-ARG-548 behavior. Roles are set by
 a human via `multica agent update --role orchestrator|reviewer|none`.
+
+Reviewer done-gate rule (ARG-548 review, ADV-1/ADV-2): a reviewer may set
+`done` only when the issue is `in_review`, a delivery receipt exists
+(`issue_delivery_verification` — written only by the real deliver flow), the
+latest receipt was recorded by a different agent AND the reviewer never
+recorded any receipt for the issue, and the reviewer is not the current
+assignee. Orchestrator create bounds (ADV-7): parent must be top-level
+(`parent.parent_issue_id IS NULL`) and the sub-issue must not be assigned to
+the creating orchestrator. Agent create-time status (ADV-6): only
+`backlog`/`todo`/`in_progress` on every agent create path.
 
 ## Metadata CLI
 

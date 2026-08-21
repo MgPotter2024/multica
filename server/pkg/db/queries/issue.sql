@@ -87,6 +87,30 @@ INSERT INTO issue_delivery_verification (
 VALUES (@task_id, @issue_id, @workspace_id, @agent_id, @comment_id, @receipt)
 RETURNING *;
 
+-- name: GetIssueDeliveryReviewFacts :one
+-- Immutable facts for the receipt-anchored reviewer done-gate (ARG-548
+-- review, ADV-1/ADV-2): whether ANY verified delivery receipt exists for the
+-- issue, whether the LATEST receipt was recorded by the given agent, and
+-- whether the given agent EVER recorded a receipt for the issue. Receipts are
+-- written only by the real `issue deliver` flow, so unlike the current
+-- assignee they cannot be rewritten by the acting agent.
+SELECT
+    EXISTS (
+        SELECT 1 FROM issue_delivery_verification a
+        WHERE a.workspace_id = @workspace_id AND a.issue_id = @issue_id
+    )::boolean AS has_delivery,
+    COALESCE((
+        SELECT l.agent_id = @agent_id FROM issue_delivery_verification l
+        WHERE l.workspace_id = @workspace_id AND l.issue_id = @issue_id
+        ORDER BY l.created_at DESC, l.task_id DESC
+        LIMIT 1
+    ), FALSE)::boolean AS latest_delivered_by_agent,
+    EXISTS (
+        SELECT 1 FROM issue_delivery_verification e
+        WHERE e.workspace_id = @workspace_id AND e.issue_id = @issue_id
+          AND e.agent_id = @agent_id
+    )::boolean AS agent_ever_delivered;
+
 -- name: CreateIssue :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,
