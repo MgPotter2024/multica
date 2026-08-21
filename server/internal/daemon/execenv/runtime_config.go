@@ -172,6 +172,15 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Grok:        writes {workDir}/AGENTS.md  (Grok Build CLI reads AGENTS.md natively from the workdir)
 // For ZCode:       writes {workDir}/AGENTS.md  (ZCode reads AGENTS.md from the session workdir)
 func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
+	// Platform-reference file mode (ARG-548 Phase 1): write the static
+	// reference sections to .multica/platform.md before rendering the brief.
+	// If the file cannot be written, fall back to the fully-inline brief for
+	// this run so the pointer line never dangles at a missing file.
+	if usePlatformReferenceFile(ctx) {
+		if err := writePlatformReferenceFile(workDir, ctx); err != nil {
+			ctx.PlatformReference = PlatformReferenceInline
+		}
+	}
 	content := buildMetaSkillContent(provider, ctx)
 	path := runtimeConfigPath(workDir, provider)
 	if path == "" {
@@ -322,6 +331,15 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 // Missing files, unknown providers, and files without a marker block are
 // no-ops — Cleanup is safe to call defensively.
 func CleanupRuntimeConfig(workDir, provider string) error {
+	// Remove the externalized platform reference first, regardless of
+	// provider: the file is written for prompt-only providers too, and
+	// removing it before CleanupSidecars runs lets the manifest-driven rmdir
+	// of `.multica` find the directory free of Multica-owned files. The file
+	// is entirely Multica-owned (no user bytes), so unconditional removal is
+	// safe; missing file (inline mode, quick-create) is a no-op.
+	if err := removePlatformReferenceFile(workDir); err != nil {
+		return err
+	}
 	path := runtimeConfigPath(workDir, provider)
 	if path == "" {
 		return nil

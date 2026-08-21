@@ -16,6 +16,7 @@ import (
 	"github.com/mattn/go-shellwords"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 const (
@@ -81,31 +82,37 @@ var DefaultGCArtifactPatterns = []string{"node_modules", ".next", ".turbo"}
 
 // Config holds all daemon configuration.
 type Config struct {
-	ServerBaseURL                  string
-	DaemonID                       string
-	LegacyDaemonIDs                []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
-	DeviceName                     string
-	RuntimeName                    string
-	CLIVersion                     string                // multica CLI version (e.g. "0.1.13")
-	LaunchedBy                     string                // "desktop" when spawned by the Electron app, empty for standalone
-	Profile                        string                // profile name (empty = default)
-	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok, zcode
-	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
-	KeepEnvAfterTask               bool                  // preserve env after task for debugging
-	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
-	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
-	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
-	GCInterval                     time.Duration         // how often the GC loop runs (default: 1h)
-	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
-	GCOrphanTTL                    time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
-	GCArtifactTTL                  time.Duration         // when a task has been completed for at least this long but its issue is still open, drop regenerable artifacts (default: 12h, set 0 to disable)
-	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
-	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
-	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
-	PollInterval                   time.Duration
-	HeartbeatInterval              time.Duration
-	AgentTimeout                   time.Duration
-	AgentMaxTurns                  int // per-run agent turn ceiling passed to backends that support --max-turns (0 = disabled)
+	ServerBaseURL           string
+	DaemonID                string
+	LegacyDaemonIDs         []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
+	DeviceName              string
+	RuntimeName             string
+	CLIVersion              string                // multica CLI version (e.g. "0.1.13")
+	LaunchedBy              string                // "desktop" when spawned by the Electron app, empty for standalone
+	Profile                 string                // profile name (empty = default)
+	Agents                  map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok, zcode
+	WorkspacesRoot          string                // base path for execution envs (default: ~/multica_workspaces)
+	KeepEnvAfterTask        bool                  // preserve env after task for debugging
+	HealthPort              int                   // local HTTP port for health checks (default: 19514)
+	MaxConcurrentTasks      int                   // max tasks running in parallel (default: 20)
+	GCEnabled               bool                  // enable periodic workspace garbage collection (default: true)
+	GCInterval              time.Duration         // how often the GC loop runs (default: 1h)
+	GCTTL                   time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
+	GCOrphanTTL             time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
+	GCArtifactTTL           time.Duration         // when a task has been completed for at least this long but its issue is still open, drop regenerable artifacts (default: 12h, set 0 to disable)
+	GCArtifactPatterns      []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
+	AutoUpdateEnabled       bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
+	AutoUpdateCheckInterval time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
+	PollInterval            time.Duration
+	HeartbeatInterval       time.Duration
+	AgentTimeout            time.Duration
+	AgentMaxTurns           int // per-run agent turn ceiling passed to backends that support --max-turns (0 = disabled)
+	// PlatformReference selects where the runtime brief's static platform
+	// reference sections live: "file" (default — externalized to
+	// .multica/platform.md in the task workdir with a pointer in the brief)
+	// or "inline" (legacy byte-identical brief; rollback switch). Set via
+	// MULTICA_PLATFORM_REFERENCE; invalid values fail startup loudly.
+	PlatformReference              execenv.PlatformReferenceMode
 	CodexSemanticInactivityTimeout time.Duration
 	AgentIdleWatchdog              time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog              time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = disabled); backstop for hung tools now that there is no wall-clock cap
@@ -407,6 +414,13 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 
+	// Platform reference mode: empty env → default (file); a typo fails
+	// startup loudly instead of silently picking a brief layout.
+	platformReference, err := execenv.ParsePlatformReferenceMode(os.Getenv(execenv.PlatformReferenceEnvVar))
+	if err != nil {
+		return Config{}, err
+	}
+
 	codexSemanticInactivityTimeout, err := durationFromEnv("MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT", DefaultCodexSemanticInactivityTimeout)
 	if err != nil {
 		return Config{}, err
@@ -577,6 +591,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		HeartbeatInterval:              heartbeatInterval,
 		AgentTimeout:                   agentTimeout,
 		AgentMaxTurns:                  agentMaxTurns,
+		PlatformReference:              platformReference,
 		CodexSemanticInactivityTimeout: codexSemanticInactivityTimeout,
 		AgentIdleWatchdog:              agentIdleWatchdog,
 		AgentToolWatchdog:              agentToolWatchdog,

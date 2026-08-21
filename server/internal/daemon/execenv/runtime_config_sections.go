@@ -182,6 +182,23 @@ func sanitizeBriefCodeToken(s string) string {
 	return s
 }
 
+// The three core command bullets shared byte-for-byte between the inline
+// brief (writeAvailableCommands) and the file-mode brief
+// (writeAvailableCommandsFileMode). These are the only Available Commands
+// lines that stay inline when the platform reference is externalized: `issue
+// get` and `issue comment list` are the mandatory workflow reads, and `issue
+// deliver` carries the full delivery flag contract, which is a behavior
+// contract and must never live only in the reference file.
+const (
+	cmdBulletIssueGet         = "- `multica issue get <id> --output json` — full issue.\n"
+	cmdBulletIssueCommentList = "- `multica issue comment list <issue-id> [--thread <comment-id> [--tail N] | --recent N] [--before <ts> --before-id <uuid>] [--since <RFC3339>] [--full] --output json` — thread-aware comment reads. Resolved threads come back folded by default on complete-thread reads (default list, `--recent`, `--thread` without `--tail`); pass `--full` to expand. Page older replies / threads with `--before`/`--before-id` (stderr labels: `Next reply cursor`, `Next thread cursor`); `--help` for full semantics.\n"
+	cmdBulletIssueDeliver     = "- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [--customer-method browser|cli|api --customer-surface <surface> --customer-evidence <summary> | --customer-reason <reason>] [--parent <comment-id>]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`. `--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required; `--customer-path passed` also requires `--customer-method`, `--customer-surface`, and `--customer-evidence`; `--customer-path not_applicable` also requires `--customer-reason`.\n"
+)
+
+// platformReferencePointer is the mandatory one-line pointer the file-mode
+// brief carries in place of the externalized reference sections.
+const platformReferencePointer = "Platform command/reference details live in .multica/platform.md — read it when you need command flags or platform mechanics beyond this brief.\n"
+
 // writeAvailableCommands emits the slim Available Commands section
 // (~2.4k chars vs legacy ~4.4k). Every test-asserted substring is
 // preserved: each `multica issue …` command name, all three `comment add`
@@ -198,12 +215,12 @@ func writeAvailableCommands(b *strings.Builder) {
 	b.WriteString("## Available Commands\n\n")
 	b.WriteString("Prefer `--output json` for structured data. The default brief lists only the core agent loop and common issue create/update tasks; for everything else run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
-	b.WriteString("- `multica issue get <id> --output json` — full issue.\n")
-	b.WriteString("- `multica issue comment list <issue-id> [--thread <comment-id> [--tail N] | --recent N] [--before <ts> --before-id <uuid>] [--since <RFC3339>] [--full] --output json` — thread-aware comment reads. Resolved threads come back folded by default on complete-thread reads (default list, `--recent`, `--thread` without `--tail`); pass `--full` to expand. Page older replies / threads with `--before`/`--before-id` (stderr labels: `Next reply cursor`, `Next thread cursor`); `--help` for full semantics.\n")
+	b.WriteString(cmdBulletIssueGet)
+	b.WriteString(cmdBulletIssueCommentList)
 	b.WriteString("- `multica issue create --title \"...\" [--description-file <path>] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — create an issue. For agent-authored long descriptions prefer `--description-file <path>` (heredoc stdin can swallow trailing flags, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n")
 	b.WriteString("- `multica issue update <id> [--title X] [--description-file <path>] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>]` — update fields; pass `--parent \"\"` to clear parent.\n")
 	b.WriteString("- `multica issue status <id> <status>` — flip status (todo / in_progress / in_review / done / blocked / backlog / cancelled).\n")
-	b.WriteString("- `multica issue deliver <id> --content-file <path> --local-command <command> --local-result <summary> --customer-path passed|not_applicable [--customer-method browser|cli|api --customer-surface <surface> --customer-evidence <summary> | --customer-reason <reason>] [--parent <comment-id>]` — for assignment-mode Agents, atomically post the result, store bounded local/customer-path evidence, and enter `in_review`. `--content-file`, `--local-command`, `--local-result`, and `--customer-path` are always required; `--customer-path passed` also requires `--customer-method`, `--customer-surface`, and `--customer-evidence`; `--customer-path not_applicable` also requires `--customer-reason`.\n")
+	b.WriteString(cmdBulletIssueDeliver)
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
 	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file` (write the body to a UTF-8 file in your workdir first); pass `--parent <comment-id>` to reply inside a thread. `multica issue comment add --help` for full flags.\n")
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
@@ -225,6 +242,54 @@ func writeAvailableCommandsQuickCreate(b *strings.Builder) {
 	b.WriteString("**Use `--output json` for structured data.** For anything beyond `issue create`, run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
 	b.WriteString("- `multica issue create --title \"...\" [--description \"...\" | --description-file <path> | --description-stdin] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — Create a new issue; `--attachment` may be repeated. For agent-authored long descriptions, prefer `--description-file <path>` over `--description-stdin` (flags after a HEREDOC terminator can be silently swallowed, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n\n")
+}
+
+// writeAvailableCommandsFileMode emits the Available Commands section for
+// platform-reference file mode (ARG-548 Phase 1): the mandatory pointer to
+// `.multica/platform.md` plus ONLY the three core command lines (`issue get`,
+// `issue comment list`, and `issue deliver` with its full flag contract).
+// Everything else in the full list is static reference and lives in the
+// file. The three kept bullets are shared constants with
+// writeAvailableCommands so the two modes cannot drift.
+func writeAvailableCommandsFileMode(b *strings.Builder) {
+	b.WriteString("## Available Commands\n\n")
+	b.WriteString(platformReferencePointer)
+	b.WriteString("\n")
+	b.WriteString("### Core\n")
+	b.WriteString(cmdBulletIssueGet)
+	b.WriteString(cmdBulletIssueCommentList)
+	b.WriteString(cmdBulletIssueDeliver)
+	b.WriteString("\n")
+}
+
+// writeIssueMetadataFileMode emits the one-sentence inline stand-in for the
+// Issue Metadata guidance in platform-reference file mode. The heading is
+// kept so the workflow steps' "See the `## Issue Metadata` section above"
+// references stay resolvable; the full discipline text lives in
+// `.multica/platform.md`.
+func writeIssueMetadataFileMode(b *strings.Builder) {
+	b.WriteString("## Issue Metadata\n\n")
+	b.WriteString("Read issue metadata on entry, write sparingly on exit — full guidance in .multica/platform.md.\n\n")
+}
+
+// writeRepositoriesFileMode emits the Repositories section for
+// platform-reference file mode: the dynamic repo URL list stays inline (it is
+// per-workspace task data the agent must see without opening another file),
+// while the checkout usage prose moves to `.multica/platform.md`.
+func writeRepositoriesFileMode(b *strings.Builder, ctx TaskContextForEnv) {
+	if len(ctx.Repos) == 0 {
+		return
+	}
+	b.WriteString("## Repositories\n\n")
+	b.WriteString("Available in this workspace — checkout usage in .multica/platform.md.\n\n")
+	for _, repo := range ctx.Repos {
+		if repo.Description != "" {
+			fmt.Fprintf(b, "- %s — %s\n", repo.URL, repo.Description)
+		} else {
+			fmt.Fprintf(b, "- %s\n", repo.URL)
+		}
+	}
+	b.WriteString("\n")
 }
 
 // writeCommentFormatting emits the cross-platform file-first guardrail.
@@ -573,9 +638,24 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 // Requesting User, Task Initiator, Workspace Context, Connected Apps,
 // Workflow, Always Use CLI, Output — are shared by every kind and emitted
 // unconditionally (or gated by their own data preconditions).
+//
+// Orthogonal to the kind matrix, the platform-reference mode (ARG-548
+// Phase 1) selects per section whether the static reference prose renders
+// inline or in .multica/platform.md: in file mode Available Commands shrinks
+// to a pointer + three core lines, Knowledge Layers / Attachments /
+// Connected Apps move to the file entirely, Issue Metadata keeps a
+// one-sentence inline stand-in, and Repositories keeps the URL list but
+// moves the usage prose. Inline mode is byte-identical to the pre-Phase-1
+// brief; quick-create is always inline.
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	var b strings.Builder
 	kind := classifyTask(ctx)
+	// Platform-reference file mode (ARG-548 Phase 1): static reference
+	// sections move to .multica/platform.md and the brief keeps a pointer.
+	// Inline mode keeps the brief byte-identical to the pre-Phase-1 output.
+	// Quick-create never externalizes (usePlatformReferenceFile returns
+	// false for it), so its guardrail brief is identical in both modes.
+	fileMode := usePlatformReferenceFile(ctx)
 
 	writeHeader(&b)
 	writeBackgroundTaskSafetySlim(&b)
@@ -583,11 +663,15 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeRequestingUser(&b, ctx)
 	writeTaskInitiator(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
-	writeConnectedApps(&b, ctx)
+	if !fileMode {
+		writeConnectedApps(&b, ctx)
+	}
 
-	switch kind {
-	case kindQuickCreate:
+	switch {
+	case kind == kindQuickCreate:
 		writeAvailableCommandsQuickCreate(&b)
+	case fileMode:
+		writeAvailableCommandsFileMode(&b)
 	default:
 		writeAvailableCommands(&b)
 	}
@@ -597,13 +681,21 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	}
 
 	if kind != kindQuickCreate {
-		writeRepositories(&b, ctx)
+		if fileMode {
+			writeRepositoriesFileMode(&b, ctx)
+		} else {
+			writeRepositories(&b, ctx)
+		}
 	}
 
 	if kind.hasIssueContext() {
 		writeProjectContext(&b, ctx)
-		writeKnowledgeLayers(&b)
-		writeIssueMetadata(&b)
+		if fileMode {
+			writeIssueMetadataFileMode(&b)
+		} else {
+			writeKnowledgeLayers(&b)
+			writeIssueMetadata(&b)
+		}
 	}
 
 	if kind == kindAssignmentTriggered {
@@ -634,7 +726,9 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 
 	if kind == kindCommentTriggered || kind == kindAssignmentTriggered {
 		writeMentions(&b)
-		writeAttachments(&b)
+		if !fileMode {
+			writeAttachments(&b)
+		}
 	}
 
 	writeAlwaysUseCLI(&b)

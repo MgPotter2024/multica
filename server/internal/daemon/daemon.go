@@ -3556,6 +3556,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		InitiatorEmail:                   task.InitiatorEmail,
 		WorkspaceContext:                 task.WorkspaceContext,
 		ConnectedApps:                    task.ConnectedApps,
+		PlatformReference:                d.cfg.PlatformReference,
 	}
 
 	// Mark candidate env roots as active before any env work so the GC loop
